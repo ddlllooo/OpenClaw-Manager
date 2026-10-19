@@ -10,9 +10,9 @@ OpenClaw 的跨平台部署与管理工具，提供 Electron 桌面应用和浏�
 
 | 安装包 | 适用系统 |
 | --- | --- |
-| `OpenClaw Manager Setup 1.0.5.exe` | Windows，包含 x64 / ARM64 安装资源 |
-| `OpenClaw Manager-1.0.5-arm64.dmg` | macOS Apple Silicon |
-| `OpenClaw Manager-1.0.5-x64.dmg` | macOS Intel |
+| `OpenClaw.Manager.Setup.1.0.5.exe` | Windows，包含 x64 / ARM64 安装资源 |
+| `OpenClaw.Manager-1.0.5-arm64.dmg` | macOS Apple Silicon |
+| `OpenClaw.Manager-1.0.5-x64.dmg` | macOS Intel |
 
 Release 附带 `SHA256SUMS.txt`，用于核对下载文件。桌面应用自带运行时，无需另装 Node.js。本机部署需要 Docker CLI 和已启动的 Docker Linux 容器引擎；仅通过 SSH 管理远程设备时，本机可以不安装 Docker。
 
