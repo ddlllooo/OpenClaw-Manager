@@ -1,0 +1,46 @@
+Manager Docker / 系统 LaunchDaemon 部署（2026-10-15）
+
+运行关系
+Manager 网页、API、终端与 Docker 管理逻辑在 Docker 容器内运行，不再在 macOS 运行 Node server.js。
+系统 LaunchDaemon 仅运行不带 sudo 的 Python 宿主控制器，负责检查引擎、启动固定 Compose 服务、同步恢复策略和在线备份。UserName 为 livzon；不以 root 运行控制器。
+宿主控制使用签名文件队列，无开放控制端口，无 SSH 密码进入镜像。平台会话、Host/Origin 和 CSRF 校验继续生效；Manager 和实例的端口保持仅绑定 127.0.0.1。
+
+文件
+Dockerfile：固定官方 Node/Docker CLI 镜像摘要，多阶段构建，只安装生产依赖。
+compose.yaml：单个 manager 服务，默认 bridge 网络、只读镜像、持久数据绑定、日志轮转、健康检查与资源限制。
+compose.env.example：宿主路径、UID/GID、Docker socket、部署标签和端口示例。实际 compose.env 不含账号密码。
+scripts/manager_host_service.py：宿主控制器，serve/plist/status/check/init。
+src/host-control.js：平台到宿主的签名控制协议。
+
+准备环境
+复制 compose.env.example 到 compose.env，填写实际绝对路径；数据和控制目录必须预先存在。
+使用 docker compose --env-file compose.env build manager 构建镜像。
+使用 docker compose --env-file compose.env up -d --no-build --pull never manager 显式启动平台。
+系统服务配置指定 root、instances、startupHome、controlDirectory、backupDirectory、managerContainer、managerPort、deployment、serviceLabel、composeFile、composeEnv、dockerSocket、backend。
+用当前普通用户执行 python3 scripts/manager_host_service.py plist --config <配置绝对路径> 生成 plist；由管理员安装到 /Library/LaunchDaemons 并 bootstrap system。不要在 root 身份下生成带 root UserName 的服务文件。
+
+三个开关
+Manager 自启：同步 Manager 容器 restart 策略；关闭后不退出当前 Manager，退出后不恢复。
+检查 Docker 并自动拉起：仅启动已准备好的固定后端，不自动安装/重建虚拟机，不停止当前引擎。
+实例自启：全局与单实例开关同步 unless-stopped/no。宿主恢复代码不对业务容器调用 start/stop/restart/rm。手动停止和从未启动的实例不会被拉起。
+Docker 离线时不接受已有实例策略变更，避免旧策略在引擎启动时先行恢复容器。
+后台每 20 秒检查，所有开关关闭后仅保留观察与策略同步。
+
+无需登录的后端
+Docker Desktop 仍依赖 GUI 登录。Manager 容器化与系统 LaunchDaemon 不会消除 Desktop 本身的限制，页面会明确显示。
+独立 Colima/Lima profile 使用 --activate=false 和 --ssh-config=false；不切换当前 Docker 上下文，不复用 Desktop 存储。
+Colima 的宿主 socket 是 ~/.colima/<profile>/docker.sock；Manager 容器绑定的源则应为该 Linux VM 内 /var/run/docker.sock，两个地址不可混用。
+独立后端的 Manager/实例 UID 应匹配宿主 UID，配置 OPENCLAW_INSTANCE_USER；数据目录以原绝对路径挂载。必须验证文件权限、备份、原生 RPC、健康探测、宿主端口转发与停止状态保留。
+实例升级/替换继续沿用当前恢复开关。业务后端切换前须按实例维护窗口执行，不能同时让两个后端运行同一实例或写同一数据库。
+
+备份与回滚
+先运行 scripts/backup_instances.py 在线备份并验证所有清单校验和；SQLite 使用在线备份 API。在线备份不是所有文件与数据库的全局同一时刻快照。
+另存源文件、旧 LaunchAgent plist、启动设置、容器 inspect（含敏感数据，仅 0600 保存）、实例运行状态和镜像摘要。
+Manager 切换只 bootout 旧 Manager/恢复 LaunchAgent，不停止业务容器；先启动 Manager Compose，再装入系统宿主控制器。
+失败时先 bootout 新系统服务，关闭且禁止自启新 Manager 容器，恢复旧源码和 LaunchAgent 并启动旧 Manager；业务数据不做覆盖恢复，业务容器不做停止/启动操作。
+后端迁移时仅将切换前运行的业务实例列为启动目标；停止、created、missing 状态均不列入。保留旧容器作回退，并在切换时停止旧运行实例以防重复消费消息。
+后端回退仅恢复切换前运行的实例，手动停止的实例仍不启动。任何数据库回滚必须另行确认，不能将旧备份覆盖后续业务写入。
+
+验证边界
+临时数据、临时实例、临时 Compose 项目、独立 Docker profile 与独立系统服务标签用于测试。
+独立 VM 重启验证不等同于物理 Mac 重启且无 GUI 登录验收；最终验收需要维护窗口，不能为了验证而重启现有业务服务器。

@@ -1,0 +1,47 @@
+# Dependencies and generated build output
+node_modules/
+dist/
+coverage/
+.nyc_output/
+platform/deployment-lock.json
+
+# Runtime data, credentials and environment overrides
+platform/data/
+data/
+backups/
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.env
+!*.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+
+# Local operational reports and audited third-party copies
+/ops/
+/audit/
+
+# Logs, runtime state and caches
+*.log
+*.pid
+*.tmp
+*.bak
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.cache/
+
+# Editor and OS metadata
+.idea/
+.vscode/
+.DS_Store
+._*
+Thumbs.db
+Desktop.ini
+
+# control-ui-patches/payload.tar is a required runtime asset; keep it tracked.

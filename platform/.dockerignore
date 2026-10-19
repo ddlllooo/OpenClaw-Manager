@@ -1,0 +1,14 @@
+*
+!Dockerfile
+!package.json
+!package-lock.json
+!server.js
+!src/
+!src/**
+!public/
+!public/**
+!control-ui-patches/
+!control-ui-patches/**
+!scripts/
+!scripts/**
+scripts/**/__pycache__

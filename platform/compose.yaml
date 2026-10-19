@@ -1,0 +1,59 @@
+services:
+  manager:
+    image: ${MANAGER_IMAGE:-openclaw-manager:2026.10.15-container1}
+    build:
+      context: .
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:24-bookworm-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5}
+        DOCKER_CLI_IMAGE: ${DOCKER_CLI_IMAGE:-docker:29-cli@sha256:1a4c7cb63513f349bdad01fcc6e0f3f2f67d37b9da86f14dc0d4a0942eecda00}
+    container_name: ${MANAGER_CONTAINER:-openclaw-manager}
+    init: true
+    user: "${MANAGER_UID:-501}:${MANAGER_GID:-20}"
+    group_add: ["${DOCKER_SOCKET_GID:-0}"]
+    restart: ${MANAGER_RESTART_POLICY:-unless-stopped}
+    network_mode: bridge
+    ports:
+      - "127.0.0.1:${MANAGER_PORT:-18080}:${MANAGER_PORT:-18080}"
+    environment:
+      MANAGER_PORT: ${MANAGER_PORT:-18080}
+      OPENCLAW_DEVICE_NAME: ${MANAGER_DEVICE_NAME:-}
+      OPENCLAW_PREVIOUS_MANAGER_IMAGE: ${MANAGER_PREVIOUS_IMAGE:-}
+      OPENCLAW_DATA_DIR: ${MANAGER_DATA_HOME:?set absolute MANAGER_DATA_HOME}/instances
+      OPENCLAW_STARTUP_HOME: ${MANAGER_DATA_HOME}/
+      OPENCLAW_HOST_CONTROL_DIR: /run/openclaw-control
+      OPENCLAW_BACKUP_DIR: ${MANAGER_BACKUP_DIR:?set absolute MANAGER_BACKUP_DIR}
+      OPENCLAW_INSTANCE_USER: ${OPENCLAW_INSTANCE_USER:-}
+    volumes:
+      # Preserve host paths: sibling instance bind mounts use these exact paths.
+      - type: bind
+        source: ${MANAGER_DATA_HOME}
+        target: ${MANAGER_DATA_HOME}
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${MANAGER_CONTROL_DIR:?set absolute MANAGER_CONTROL_DIR}
+        target: /run/openclaw-control
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${DOCKER_SOCKET_HOST:?set absolute DOCKER_SOCKET_HOST}
+        target: /var/run/docker.sock
+        bind:
+          create_host_path: false
+    labels:
+      openclaw.manager: "true"
+      openclaw.deployment: ${MANAGER_DEPLOYMENT:?set unique MANAGER_DEPLOYMENT}
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 0.75
+    mem_limit: 512m
+    pids_limit: 128
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

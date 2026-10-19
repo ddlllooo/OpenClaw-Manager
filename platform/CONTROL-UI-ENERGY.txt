@@ -1,0 +1,20 @@
+实例自带控制台显示任务降耗（2026-10-15）
+
+范围：现有镜像 control-ui 静态前端的 Ghostty 终端渲染循环、聊天运行状态栏、目标运行时间、相对更新时间标签。未修改全局计时器、网关/RPC、WebSocket、音频录制、鉴权、模型、飞书、实例数据或自动备份。
+
+处理：
+- 终端原来持续 requestAnimationFrame 遍历渲染，即使无新输出。改为有输出时约 30 Hz 合并刷新，空闲时 4 Hz；页面隐藏、终端不可见或移出视口时暂停该循环和光标闪烁，恢复可见时重画。
+- 保留全部终端输入/输出解析；不暂停 shell、业务进程或网关连接。
+- 运行计时和相对时间仅在可见时更新，恢复后使用 Date.now() 校正，不改变真实任务计时/截止时间。
+- 所有受影响的模块依赖图使用新的文件名，避免 HTTP/Safari/Service Worker 缓存继续加载旧模块；原模块文件不覆盖，回滚入口即可恢复。
+
+备份：/Users/livzon/openclaw-backups/pre-control-ui-energy-20261015/
+两台实例各保存完整 control-ui 归档（原始内容相同，SHA256 1e147c2a02541bc33fd5ed5876e372a2223be2bcb248a71f13e478b6aa6cec24），另保存管理平台程序与配置/运行基线。数据每日备份目录仍为 /Users/livzon/openclaw-backups/daily。
+
+重建保留：control-ui-patches/manifest.json 将补丁绑定到精确镜像 ID。新建/重建容器在启动前校验 payload.tar 的 SHA256，匹配后仅写入 /app/dist/control-ui；其他镜像不应用。校验或写入失败则清理本次新容器并由原有事务恢复旧容器。现有实例的镜像引用和配置不变。
+
+回滚：先禁用 control-ui-patches/manifest.json（避免以后重建再应用），从对应实例的原始 tar.gz 取回 control-ui/index.html 和 asset-manifest.json，原子替换到容器 /app/dist/control-ui。原有模块保留，无需重启业务容器。管理平台代码可用 manager-program.tar.gz 恢复。回滚不应覆盖任何实例数据目录。
+
+验证方式：实际编译的旧/新渲染方法在同一模拟时钟中比较（5 秒空闲 300 次降至 21 次，隐藏后为 0）；独立浏览器终端验证 ANSI、输出保留、输入回显、隐藏/恢复。完整独立网关验证登录、聊天入口、仪表盘、自动化和插件页。目标 Safari 的实际能耗尚未采样，渲染次数下降不是功耗百分比。
+
+限制：隔离网关对 WASM 的 CSP 会阻止直接初始化终端测试页；该问题在原安全策略下也存在。本次不修改 CSP，终端渲染器交互另在无业务数据的本地隔离页面验证。服务器业务实例只检查静态资源和健康状态，不新建对话或发送飞书消息。

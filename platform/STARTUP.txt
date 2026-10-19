@@ -1,0 +1,16 @@
+启动与恢复（2026-10-15）
+
+容器化版本参见 CONTAINER-DEPLOYMENT.txt。配置 OPENCLAW_HOST_CONTROL_DIR 后，平台使用系统 LaunchDaemon 的宿主控制器；以下用户 LaunchAgent 说明仅适用于旧版及回滚路径。页面会显示实际后端与登录依赖。
+
+入口：页面顶部“启动与恢复”。三个独立开关控制 Manager 登录自启、Docker Desktop 登录启动项与后台拉起、实例自动恢复。支持对单个实例关闭自启。
+macOS Docker Desktop 依赖用户登录会话；本功能不修改系统登录方式，不提供登录前容器运行环境。Manager 自启关闭时不会退出当前管理进程；Docker 自动拉起关闭时不会停止当前引擎。
+
+恢复任务：com.openclaw.manager.recovery，当前用户 LaunchAgent，每 20 秒检查一次。
+三个开关全部关闭后，后台仅保留观察与策略同步，不拉起 Manager、Docker 或实例。
+已有容器的实例策略变更要求 Docker 可用，避免引擎恢复时旧策略先启动容器的竞态；Docker 离线时仍可单独保存 Manager 和 Docker 开关。
+流程：检查 Node、Docker CLI、Desktop 与配置目录；确保允许自启的 Manager 存活；探测 Docker 引擎，未启动时后台 open -gj -a Docker；已有后台进程时仅等待引擎；拉起间隔至少 120 秒；引擎就绪后校验实例归属、同步恢复策略、探测 healthz 和 readyz。异常状态持久化并在平台显示。
+设置：data/startup-settings.json；最近状态：data/startup-status.json；锁：data/startup-control.lock；保存前检查版本，事务失败尝试回滚启动项和容器策略。
+
+实例恢复使用 Docker unless-stopped，关闭则使用 no。恢复程序没有 start/stop/restart/rm 实例的操作，不重新创建缺失容器，也不会重启尚在运行但未就绪的业务实例。Docker 自己保留手动停止标记，因此平台停止、命令行 docker stop、从未启动的 created 容器都不会被本程序强行启动。
+新建、环境更新导致的容器替换同样遵守当前全局和单实例开关。
+测试模式仅使用独立数据目录、测试 LaunchAgent 标签和临时容器；禁止拉起或关闭真实宿主 Docker Desktop。

@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenClaw 实例管理</title>
+  <link rel="stylesheet" href="/style.css?v=dialog-footer-20261016">
+  <link rel="stylesheet" href="/devices.css?v=device-labels-20261016">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="m16 4 11 6v12l-11 6-11-6V10L16 4Z M5 10l11 6 11-6M16 16v12" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></span>
+      <div>
+        <div class="brand-name">OpenClaw <span>Manager</span></div>
+        <div class="subtitle" id="deploymentLabel">本机 Docker · 可通过 SSH 连接远程设备</div>
+      </div>
+    </div>
+    <div class="system-info" id="systemInfo">正在连接 Docker…</div>
+  </header>
+
+  <div class="workspace">
+  <section class="workspace-heading" aria-labelledby="workspaceTitle">
+    <div><div class="eyebrow" id="workspaceTitle">工作空间 / 实例管理</div></div>
+    <div class="feature-toolbar"><button class="btn" id="btnConnections">部署设备 / SSH</button><button class="btn" id="btnStartup">启动与恢复</button><button class="btn primary create-button" id="btnNew"><span aria-hidden="true">＋</span> 开通新实例</button></div>
+  </section>
+  <section class="overview-grid" aria-label="实例状态概览">
+    <div class="overview-card"><span class="overview-label">全部实例</span><div class="overview-value" id="totalInstances">—</div><span class="overview-caption">当前工作空间</span></div>
+    <div class="overview-card"><span class="overview-label"><i class="status-dot"></i>运行中</span><div class="overview-value" id="runningInstances">—</div><span class="overview-caption">容器运行状态</span></div>
+    <div class="overview-card"><span class="overview-label"><i class="status-dot idle"></i>未运行</span><div class="overview-value" id="idleInstances">—</div><span class="overview-caption">已停止、待创建及其他状态</span></div>
+  <section class="backup-status panel" id="backupStatus" role="status" aria-live="polite" aria-label="自动备份状态">
+    <div><strong>自动备份</strong><span id="backupSummary">正在读取备份状态…</span><div id="backupDetail"></div></div>
+    <button class="btn small" id="btnBackupNow">立即备份</button>
+  </section>
+  </section>
+
+  <div class="layout">
+    <!-- 左侧：操作与实例列表 -->
+    <aside class="panel sidebar">
+      <div class="panel-head">
+        <h2>实例列表</h2>
+        <span class="count-badge" id="instanceCount"></span>
+      </div>
+      <div class="sidebar-search">
+        <input type="search" id="instanceSearch" placeholder="搜索实例名称…" aria-label="搜索实例名称" autocomplete="off">
+      </div>
+      <div class="instance-filters" role="group" aria-label="按运行状态筛选">
+        <button class="filter-button active" data-instance-filter="all" aria-pressed="true">全部</button>
+        <button class="filter-button" data-instance-filter="running" aria-pressed="false">运行中</button>
+        <button class="filter-button" data-instance-filter="idle" aria-pressed="false">未运行</button>
+      </div>
+      <div id="instanceList" class="instance-list">
+        <div class="empty">暂无实例，点击上方「开通新实例」创建第一个 OpenClaw 实例。</div>
+      </div>
+      <div class="sidebar-actions">
+        <button class="btn block" id="btnImages">本地镜像 <span aria-hidden="true">↗</span></button>
+        <button class="btn block" id="btnKept" style="display:none">恢复保留的实例</button>
+        <p>镜像提前下载，开通更加顺畅</p>
+      </div>
+    </aside>
+
+    <!-- 右侧：实例详情 -->
+    <main class="panel detail-panel" id="detailPanel">
+      <div class="empty">从左侧选择一个实例查看详情</div>
+    </main>
+  </div>
+
+  <!-- 事件日志 -->
+  <section class="panel log-panel" id="logPanel">
+    <div class="panel-head">
+      <h2>活动记录 <span class="section-caption">最近的操作与系统事件</span></h2>
+      <div class="head-actions">
+        <button class="btn small" id="btnClearLog">清空</button>
+        <button class="btn small" id="btnToggleLog">收起</button>
+      </div>
+    </div>
+    <div id="eventLog" class="event-log" role="log" aria-label="操作与系统事件"></div>
+  </section>
+  <footer class="workspace-footer"><span>OpenClaw Manager</span><span>本地部署 · 独立容器 · 数据自主掌握</span></footer>
+  </div>
+
+  <!-- 镜像管理弹窗 -->
+  <div class="modal hidden" id="imagesModal">
+    <div class="modal-card modal-card-lg">
+      <h3>本地镜像仓库</h3>
+      <p class="hint" id="retentionStatus">升级成功后自动清理：每个实例保留最近一个回滚版本，Manager 保留上一版；仍被引用的项目不会删除。</p>
+      <p class="hint">提前把 OpenClaw 镜像下载到本地 Docker 存储，后续开通实例直接读取本地镜像，不再访问网络，避免开通时超时。</p>
+      <div class="image-pull-row">
+        <input type="text" id="imagePullName" placeholder="镜像名，如 openclaw/openclaw:latest">
+        <button class="btn primary" id="btnPullImage">下载到本地</button>
+      </div>
+      <div class="pull-progress hidden" id="imagePullProgress"></div>
+      <div id="imageList" class="image-list">加载中…</div>
+      <section class="cleanup-panel" aria-labelledby="cleanupTitle">
+        <h4 id="cleanupTitle">清理预览</h4>
+        <p class="hint">每个实例保留最近一个回滚版本，Manager 保留上一版。预览不会删除内容；清理只处理预览中可删除的项目，并再次检查引用。</p>
+        <div class="cleanup-actions">
+          <button type="button" class="btn small" id="btnCleanupPreview">刷新清理预览</button>
+        </div>
+        <p class="hint" id="cleanupNotice" role="status" aria-live="polite">正在等待清理预览。</p>
+        <div id="cleanupPreview" class="hidden"></div>
+        <div class="cleanup-actions"><button type="button" class="btn small danger" id="btnCleanupRun" disabled>按预览清理</button></div>
+        <p class="hint" id="cleanupResult" role="status" aria-live="polite"></p>
+      </section>
+      <section class="cleanup-panel" aria-labelledby="cleanupHistoryTitle">
+        <h4 id="cleanupHistoryTitle">清理历史</h4>
+        <div class="cleanup-actions"><button type="button" class="btn small" id="btnCleanupHistory">刷新清理历史</button></div>
+        <p class="hint" id="cleanupHistoryNotice" role="status" aria-live="polite">正在等待清理历史。</p>
+        <div id="cleanupHistory"></div>
+        <button type="button" class="btn small hidden" id="btnCleanupHistoryMore">加载更早记录</button>
+      </section>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="btnCloseImages">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 开通表单 -->
+  <div class="modal hidden" id="createModal">
+    <div class="modal-card create-card" role="dialog" aria-modal="true" aria-labelledby="createTitle">
+      <div class="eyebrow">新建工作环境</div>
+      <h3 id="createTitle">开通新实例</h3>
+      <p class="hint">配置独立的 OpenClaw 环境，资源已按宿主机自动推荐。</p>
+      <form id="createForm">
+        <fieldset class="basic-fields"><legend><span class="step-number">01</span> 基本信息</legend>
+        <label>实例名称
+          <input type="text" name="name" maxlength="40" placeholder="例如：日常助手、研发工作台">
+        </label>
+        <label>镜像
+          <input type="text" name="image" id="imageInput" placeholder="openclaw/openclaw:latest">
+          <div class="image-chips" id="localImageChips"></div>
+        </label>
+        </fieldset>
+        <fieldset>
+          <legend><span class="step-number">02</span> 资源配置</legend>
+          <div class="grid3">
+            <label>CPU 核数上限
+              <input type="number" name="cpus" id="resCpusInput" min="0.1" step="0.1" required>
+            </label>
+            <label>内存上限
+              <input type="text" name="memory" id="resMemInput" required>
+            </label>
+            <label>进程数上限
+              <input type="number" name="pidsLimit" id="resPidsInput" min="1" step="1">
+            </label>
+          </div>
+          <div class="reco-note" id="recoNote">正在计算推荐配置…</div>
+        </fieldset>
+        <details class="advanced-fields"><summary><span class="step-number">03</span> 可选设置 <span class="optional-hint">端口与配置复用</span></summary>
+        <div class="advanced-body">
+        <label>端口（留空自动分配 19000-19999）
+          <input type="number" name="port" min="1024" max="65535" placeholder="自动分配">
+        </label>
+        <label>复制现有实例的模型配置（不复制渠道身份）
+          <select name="cloneFrom" id="cloneFromSelect">
+            <option value="">不复制，使用全新配置</option>
+          </select>
+        </label>
+        </div></details>
+        <p class="form-footnote">每个实例使用独立容器、配置目录与端口。</p>
+        <div class="modal-actions">
+          <button type="button" class="btn" id="btnCancelCreate">取消</button>
+          <button type="submit" class="btn primary" id="btnCreate">确认开通</button>
+        </div>
+        <div class="pull-progress hidden" id="pullProgress" role="status" aria-live="polite"></div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 保留数据恢复（有 .kept 存档时显示） -->
+  <div class="modal hidden" id="keptModal">
+    <div class="modal-card">
+      <h3>保留的实例数据</h3>
+      <p class="hint">这些实例删除时选择了「保留数据」。恢复后实例回到列表（容器需重新启动，端口可能变化）。</p>
+      <div id="keptList" class="image-list">加载中…</div>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="btnCloseKept">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 实例改名弹窗 -->
+  <div class="modal hidden" id="renameModal">
+    <div class="modal-card" style="width:420px">
+      <h3>重命名实例</h3>
+      <p class="hint" id="renameHint"></p>
+      <label>新名称
+        <input type="text" id="renameInput" maxlength="40" placeholder="实例名称">
+      </label>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="btnCancelRename">取消</button>
+        <button type="button" class="btn primary" id="btnConfirmRename">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/activity.js?v=20261015energy2"></script>
+  <script src="/management.js?v=20261015management2"></script>
+  <script src="/features.js?v=20261015management2"></script>
+  <script src="/app.js?v=cleanup-history-20261016"></script>
+  <script src="/startup.js?v=dialog-footer-20261016"></script>
+  <script src="/connections.js?v=key-import-20261019"></script>
+  <script src="/devices.js?v=device-labels-20261016"></script>
+</body>
+</html>

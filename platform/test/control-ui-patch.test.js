@@ -1,0 +1,22 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const crypto = require('crypto');
+const {applyControlUiPatch} = require('../src/control-ui-patch');
+test('only the matching image receives a verified static UI archive at the fixed image path', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(),'control-ui-patch-'));
+  t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  const archive = Buffer.from('fixture archive');
+  fs.writeFileSync(path.join(dir,'payload.tar'),archive);
+  const manifest = {imageId:'sha256:fixture',archiveSHA256:crypto.createHash('sha256').update(archive).digest('hex')};
+  fs.writeFileSync(path.join(dir,'manifest.json'),JSON.stringify(manifest));
+  const calls=[];const container={putArchive:async(data,options)=>calls.push({data,options})};
+  assert.equal(await applyControlUiPatch(container,'sha256:other',dir),false);assert.equal(calls.length,0);
+  assert.equal(await applyControlUiPatch(container,'sha256:fixture',dir),true);
+  assert.deepEqual(calls[0].data,archive);assert.equal(calls[0].options.path,'/app/dist/control-ui');
+  fs.writeFileSync(path.join(dir,'payload.tar'),'corrupted');
+  await assert.rejects(applyControlUiPatch(container,'sha256:fixture',dir),/补丁校验失败/);assert.equal(calls.length,1);
+});
