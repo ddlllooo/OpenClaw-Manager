@@ -1,6 +1,8 @@
 # OpenClaw 跨平台 Docker 与 SSH 远程部署管理平台
 
-本次构建：`2026.10.16-ssh-image-transfer2`。支持 macOS、Linux、Windows 本机运行，以及通过 SSH 在其他设备部署和管理 OpenClaw。顶部「部署设备 / SSH」现已支持从本机 Docker 流式传输镜像到目标 Docker 并自动导入。
+当前版本：**1.1.0**。安装、升级、登录和构建步骤见 [项目 README](../README.md)，新版界面见 [前端说明](frontend/README.md)。本版本增加 React 管理界面、容量保护与加密恢复、独立 Docker 控制服务，以及可选的 Agent、插件和飞书隔离能力；macOS APFS 硬容量保护见 [APFS-STORAGE.md](APFS-STORAGE.md)。Windows 本次提供包含 x64 / ARM64 资源的 NSIS 安装包。
+
+本文保留此前部署基线 `2026.10.16-ssh-image-transfer2` 的操作和验收记录，日期、服务器路径与既有定时任务仅适用于当时环境。涉及当前认证、Docker 控制服务与存储保护的行为，以项目 README 和本文后续对应功能章节为准。
 
 | 使用方式 | macOS | Linux | Windows |
 |---|---|---|---|
@@ -46,7 +48,7 @@ Linux/Windows 原生运行及 SSH 自动部署中的「启动与恢复」由跨�
 
 验证记录：Windows Node.js 与 Linux 容器环境各通过 158 项 Node 测试；在线备份在 Linux 通过 8 项、Windows 通过 7 项，另 1 项因当前用户没有符号链接权限而跳过。新增测试覆盖流式导入、经典/containerd ID 兼容、缓存跳过、架构/标签冲突、损坏/不完整流、磁盘错误、取消与并发上限，以及无 Manager 的 SSH 模式和不 build/pull 的离线启动。`node test/ssh-image-smoke.cjs` 使用临时 SSH 服务和真实本机 Docker，成功导出、传输、导入并校验 48,374,272 字节的独立 QA 镜像；测试结束删除其专用镜像标签与容器，未使用真实 OpenClaw 数据或外部设备。原有 SSH、终端、SSE、会话和后台启动测试继续保留。Windows 上实际连接 Docker 命名管道及挂载验证见 `node test/docker-platform-smoke.cjs`。已在真实 macOS ARM64 主机完成 Manager 容器构建、测试及更新；未在 Windows ARM 设备运行，未生成各平台安装包。容器模式将每个 SSH 设备的管理页与 Gateway 放在独立的 `*.localhost` 来源，并通过现有管理端口访问；建议使用支持 localhost 子域名的 Chromium 浏览器。
 
-当前维护版本：`1.0.5`；原有服务器部署基线为 `2026.10.15-instance-features1`。历史修复及部署验证见 `RELEASE-NOTES.txt`，每日备份见 `BACKUPS.txt`，页面降耗检查见 `ENERGY.txt` 和 `CONTROL-UI-ENERGY.txt`。下述 LaunchAgent、备份路径与定时计划均为原有 Mac 服务器配置。
+当前维护版本：`1.1.0`；原有服务器部署基线为 `2026.10.15-instance-features1`。历史修复及部署验证见 `RELEASE-NOTES.txt`，每日备份见 `BACKUPS.txt`，页面降耗检查见 `ENERGY.txt` 和 `CONTROL-UI-ENERGY.txt`。下述 LaunchAgent、备份路径与定时计划均为原有 Mac 服务器配置。
 
 服务器已配置每天 03:30（上海时间）在线备份全部实例与保留数据，保留最近 7 天。平台顶部显示成功/失败及下次运行，可立即备份或重试。数据库使用在线备份，不停止业务容器；备份默认保存在 `/Users/livzon/openclaw-backups/daily`。
 

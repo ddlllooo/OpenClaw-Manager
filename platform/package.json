@@ -1,6 +1,6 @@
 {
   "name": "openclaw-docker",
-  "version": "1.0.5",
+  "version": "1.1.0",
   "description": "OpenClaw 跨平台 Docker 与 SSH 远程部署管理平台",
   "main": "electron/main.js",
   "scripts": {
@@ -8,7 +8,7 @@
     "app": "electron electron/main.js",
     "dist": "electron-builder --publish never",
     "dist:mac": "electron-builder --mac --publish never",
-    "dist:win": "electron-builder --win --publish never",
+    "dist:win": "electron-builder --win --publish never -c.npmRebuild=false",
     "dist:linux": "electron-builder --linux --publish never",
     "dist:zip": "electron-builder --mac --publish never",
     "watch": "node scripts/watch-build.mjs",
@@ -63,7 +63,10 @@
     "productName": "OpenClaw Manager",
     "beforePack": "scripts/prepare-electron.cjs",
     "asarUnpack": [
-      "scripts/**/*"
+      "scripts/**/*",
+      "src/**/*",
+      "security/**/*",
+      "node_modules/**/*"
     ],
     "directories": {
       "output": "dist",
@@ -76,6 +79,8 @@
       "public/**/*",
       "electron/**/*",
       "node_modules/**/*",
+      "!node_modules/cpu-features/**/*",
+      "!node_modules/ssh2/lib/protocol/crypto/build/**/*",
       "package.json",
       "deployment-lock.json",
       "Dockerfile",
