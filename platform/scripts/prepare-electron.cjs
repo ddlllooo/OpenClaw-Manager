@@ -6,5 +6,6 @@ const path = require('node:path');
 // the lock inside the packaged app, so include a copy under its fallback name.
 module.exports = async () => {
   const root = path.resolve(__dirname, '..');
+  require('node:child_process').execFileSync(process.execPath, [path.join(root, 'node_modules', 'vite', 'bin', 'vite.js'), 'build'], { cwd: root, stdio: 'inherit', windowsHide: true });
   fs.copyFileSync(path.join(root, 'package-lock.json'), path.join(root, 'deployment-lock.json'));
 };

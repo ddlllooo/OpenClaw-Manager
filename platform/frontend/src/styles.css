@@ -1,0 +1,102 @@
+@import "tailwindcss";
+@source "./**/*.{js,jsx}";
+@custom-variant dark (&:is(.dark *));
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--background);
+  --color-primary-hover: #fff;
+  --color-secondary: #141516;
+  --color-secondary-foreground: #d0d6e0;
+  --color-muted: #191a1b;
+  --color-muted-foreground: #8a8f98;
+  --color-accent: #232326;
+  --color-accent-foreground: #f7f8f8;
+  --color-sidebar: #0f1011;
+  --color-surface-hover: #191a1b;
+  --color-border-hover: #34343a;
+  --color-brand: var(--brand);
+  --color-brand-ink: #828fff;
+  --color-success: #68c29a;
+  --color-warning: #e6b76b;
+  --color-destructive: #eb7373;
+  --color-console: #08090a;
+  --color-inactive: #62666d;
+  --color-border: var(--border);
+  --color-input: #34343a;
+  --color-ring: #828fff;
+  --font-sans:
+    "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+}
+:root {
+  /* Linear's public homepage color scales; keep brand and button colors separate. */
+  --background: #08090a;
+  --foreground: #f7f8f8;
+  --card: #0f1011;
+  --primary: #e5e5e6;
+  --brand: #7170ff;
+  --border: #23252a;
+}
+@layer base {
+  * {
+    border-color: var(--border);
+    scrollbar-width: thin;
+    scrollbar-color: #37393a transparent;
+  }
+  body {
+    margin: 0;
+    min-width: 360px;
+    font-family: var(--font-sans);
+    background: var(--background);
+    color: var(--foreground);
+    -webkit-font-smoothing: antialiased;
+  }
+  button,
+  select,
+  a {
+    -webkit-tap-highlight-color: transparent;
+  }
+  button:not(:disabled),
+  select {
+    cursor: pointer;
+  }
+  ::selection {
+    background: #5e6ad266;
+    color: #fff;
+  }
+}
+.hero-glow {
+  background: radial-gradient(ellipse at 75% 0%, #d0d6e006, transparent 65%);
+}
+.grid-surface {
+  background-image:
+    linear-gradient(#ffffff03 1px, transparent 1px),
+    linear-gradient(90deg, #ffffff03 1px, transparent 1px);
+  background-size: 44px 44px;
+}
+@keyframes appear {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.page-enter {
+  animation: appear 220ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}

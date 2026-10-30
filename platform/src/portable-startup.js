@@ -28,7 +28,7 @@ async function invoke(action,body={}) {
     try{
       for(const id of ids){const inst=store.loadInstance(id);if(!inst.containerId)continue;
         const c=docker.getContainer(inst.containerId),old=await c.inspect();
-        const name=next.instancesAutoStart&&next.instanceOverrides[id]!==false?'unless-stopped':'no';
+        const name=next.instancesAutoStart&&next.instanceOverrides[id]!==false&&!require('./storage').isBlocked(id)&&!require('./storage').requiresMountGuard(id)?'unless-stopped':'no';
         await c.update({RestartPolicy:{Name:name}});changed.push([c,old.HostConfig.RestartPolicy]);
       }
       if(process.env.MANAGER_CONTAINERIZED==='1'&&next.managerAutoStart!==settings.managerAutoStart){
@@ -41,8 +41,9 @@ async function invoke(action,body={}) {
   const rows=[],errors=[];
   for(const id of ids){const inst=store.loadInstance(id);let data;
     try{data=inst.containerId?await docker.inspectContainer(inst.containerId):null;}catch(e){if(e.statusCode!==404)errors.push(e.message);}
-    rows.push({id,name:inst.name,enabled:settings.instanceOverrides[id]!==false,effective:settings.instancesAutoStart&&settings.instanceOverrides[id]!==false,
-      state:data?.State?.Status||'missing',restartPolicy:data?.HostConfig?.RestartPolicy?.Name||'no',detail:data?'由 Docker 重启策略恢复':'容器尚未创建或已移除'});
+    const storageProtected=require('./storage').isBlocked(id);
+    rows.push({id,name:inst.name,enabled:settings.instanceOverrides[id]!==false,effective:settings.instancesAutoStart&&settings.instanceOverrides[id]!==false&&!storageProtected,storageProtected,
+      state:data?.State?.Status||'missing',restartPolicy:data?.HostConfig?.RestartPolicy?.Name||'no',detail:storageProtected?'存储保护锁定，禁止自动启动':data?'由 Docker 重启策略恢复':'容器尚未创建或已移除'});
   }
   try{await docker.dockerInfo();}catch{errors.push('Docker 引擎不可达，请在目标设备启动 Docker');}
   return {settings,revision:revision(settings),instances:rows,managerRuntime:process.env.MANAGER_CONTAINERIZED==='1'?'docker-portable':'native-portable',

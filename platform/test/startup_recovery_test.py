@@ -1,5 +1,6 @@
-import contextlib, importlib.util, json, os, plistlib, tempfile, unittest
+import contextlib, importlib.util, json, os, plistlib, tempfile, unittest, sys
 from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parent.parent/'scripts'))
 spec=importlib.util.spec_from_file_location('startup_recovery',Path(__file__).resolve().parent.parent/'scripts/startup_recovery.py')
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 class FakeHost:
@@ -39,6 +40,19 @@ class Tests(unittest.TestCase):
         self.assertFalse(self.s.settings()['managerAutoStart'])
     def test_unknown_instance_override_is_rejected(self):
         with self.assertRaises(m.RecoveryError):self.save(instanceOverrides={'business-not-in-this-data-root':False})
+    def test_storage_latch_overrides_startup_settings(self):
+        row=self.host.record(state='exited')
+        folder=self.host.data.parent/'storage';folder.mkdir()
+        (folder/'fixture.json').write_text(json.dumps({'blocked':{'reason':'full'}}))
+        self.s.tick();self.save(instancesAutoStart=True)
+        self.assertEqual(self.host.containers[row['containerId']]['HostConfig']['RestartPolicy']['Name'],'no')
+        self.assertEqual(self.host.containers[row['containerId']]['State']['Status'],'exited')
+    def test_unverified_hard_quota_does_not_regain_auto_start(self):
+        row=self.host.record(state='exited')
+        folder=self.host.data.parent/'storage';folder.mkdir()
+        (folder/'fixture.json').write_text(json.dumps({'policy':{'mode':'hard'},'hard':{'phase':'applying'}}))
+        self.s.tick()
+        self.assertEqual(self.host.containers[row['containerId']]['HostConfig']['RestartPolicy']['Name'],'no')
     def test_global_and_per_instance_policies_never_start_containers(self):
         a=self.host.record(state='exited');self.save(instancesAutoStart=False)
         self.assertEqual(self.host.containers[a['containerId']]['State']['Status'],'exited')

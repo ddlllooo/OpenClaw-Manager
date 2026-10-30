@@ -11,7 +11,7 @@ function managementPages(tab) {
     <div class="feature-toolbar"><label>技能所属 Agent<select id="extAgent" class="input"><option value="main">main</option></select></label><label>筛选<input id="extFilter" class="input" placeholder="名称或说明"></label></div>
     <h4>技能</h4><div id="extSkills">打开页签后加载。</div>
     <div class="feature-review"><h4>安装 ClawHub 技能</h4><div class="feature-toolbar"><input id="skillQuery" aria-label="搜索技能" class="input" placeholder="技能名称或关键词">${mgButton('skillSearch','搜索')}</div><div id="skillResults"></div><pre id="skillDetail" class="mg-detail hidden"></pre><p class="reco-note">显示技能来源与依赖。启停对实例生效；Agent 的技能白名单仍优先。安装沿用 OpenClaw 的来源与安全检查。</p></div>
-    <h4>插件</h4><div id="extPlugins"></div><div class="feature-review"><label>固定版本 npm 插件<input id="pluginSpec" class="input" placeholder="@openclaw/feishu@2026.9.3"></label>${mgButton('pluginInstall','安装插件')}<p class="reco-note">安装前核对包名与版本。安装或启停后，使用顶部“重启”应用完整插件生命周期；内置插件可停用。</p></div>`,tab)
+    <h4>插件</h4><div id="isolatedPlugins"></div><p class="reco-note">独立工具插件只接收获准工具的参数，不挂载实例数据或模型密钥。原生插件与网关共享进程；新增原生插件需要管理员信任名单。</p><div id="extPlugins"></div><div class="feature-review"><label>管理员信任的原生 npm 插件<input id="pluginSpec" class="input" placeholder="@openclaw/feishu@2026.9.3"></label>${mgButton('pluginInstall','检查安装来源')}<div id="pluginReview" class="hidden"><pre id="pluginReviewDetail" class="mg-detail"></pre><label>输入本次审查的完整包名和版本<input id="pluginConfirmSpec" class="input" autocomplete="off"></label>${mgButton('pluginConfirm','核对后继续')}</div><p class="reco-note">安装前检查公共 npm 来源、固定版本和 SHA-512，再审查运行时提取的权限。策略警告不会自动接受。内置插件可停用。</p></div>`,tab)
     + mgPage('failover','模型故障切换',`<p class="reco-note">OpenClaw 在鉴权、限流或服务不可用等可切换错误发生时，按备用顺序继续尝试。模型输出质量问题不会自动触发切换。</p>
       <div id="failoverEditor"></div><div class="feature-toolbar">${mgButton('failoverSave','保存模型策略')}</div><div id="failoverPreview" class="reco-note"></div>`,tab)
     + mgPage('access','飞书访问设置',`<label>规则范围<select id="accessAccount" class="input"><option value="">全局 / 默认账号</option></select></label><p id="accessScope" class="reco-note"></p>
@@ -51,6 +51,7 @@ async function managementLoad(tab) {
       $('#accessAccount').innerHTML='<option value="">全局 / 默认账号</option>'+data.accounts.map(a=>`<option value="${esc(a.id)}">${esc(a.name)} (${esc(a.id)})</option>`).join('');$('#accessAccount').value=account;
       $('#accessScope').textContent=account?'修改此账号的覆盖规则；恢复继承后使用全局设置。':'修改全局规则；账号和单独群聊的覆盖项将继续保留。';
       $('#accessEditor').innerHTML=`<label>私聊访问<select class="input" id="accessDm">${[['pairing','配对批准'],['allowlist','仅白名单'],['open','所有用户'],['disabled','关闭私聊']].map(([v,n])=>`<option value="${v}">${n}</option>`).join('')}</select></label><label>群聊访问<select class="input" id="accessGroup">${[['allowlist','仅白名单群'],['open','所有群'],['disabled','关闭群聊']].map(([v,n])=>`<option value="${v}">${n}</option>`).join('')}</select></label><label>私聊用户白名单<textarea class="input" id="accessUsers" rows="4"></textarea></label><label>群白名单<textarea class="input" id="accessGroupIds" rows="4"></textarea></label><label>群内发送者白名单<textarea class="input" id="accessSenders" rows="4" placeholder="留空表示不额外限制群内发送者"></textarea></label><label class="feature-check"><input type="checkbox" id="accessMention"> 群聊需 @ 机器人</label>`;
+      if(data.isolated){$('#accessAccount').innerHTML=data.accounts.map(a=>`<option value="${esc(a.id)}">${esc(a.name)} (${esc(a.id)})</option>`).join('');$('#accessAccount').value=data.account;$('#accessScope').textContent='独立飞书：规则在网关外生效，仅允许明确白名单或关闭；不恢复原生插件。';for(const select of [$('#accessDm'),$('#accessGroup')])for(const option of [...select.options])if(!['allowlist','disabled'].includes(option.value))option.remove();}
       $('#accessDm').value=data.effective.dmPolicy;$('#accessGroup').value=data.effective.groupPolicy==='allowall'?'open':data.effective.groupPolicy;
       $('#accessUsers').value=data.effective.allowFrom.join('\n');$('#accessGroupIds').value=data.effective.groupAllowFrom.join('\n');$('#accessSenders').value=data.effective.groupSenderAllowFrom.join('\n');$('#accessMention').checked=data.effective.requireMention;
       $('#accessGroups').innerHTML=(data.groups||[]).map(g=>`<div class="feature-row"><span>${esc(g.id)} · ${g.enabled===false?'停用':'启用 / 继承'} · ${g.requireMention===undefined?'提及规则继承':g.requireMention?'需要 @':'无需 @'}</span>${mgButton('accessGroupEdit','编辑',`data-id="${esc(g.id)}"`)}</div>`).join('')||'<p>暂无单独群聊规则。</p>';mgSaved('#accessEditor');
@@ -67,7 +68,9 @@ async function managementLoad(tab) {
 function renderExtensions() {
   const d=managementState.extensions;if(!d)return;const q=$('#extFilter').value.toLowerCase();const match=r=>(r.name+' '+r.id+' '+r.description).toLowerCase().includes(q);
   $('#extSkills').innerHTML=d.skills.filter(match).map(s=>`<div class="feature-row"><div><b>${esc(s.name)}</b> <span class="badge">${s.disabled?'已停用':s.eligible?'可用':'依赖缺失 / 受策略限制'}</span><p>${esc(s.description)}</p><p class="reco-note">来源 ${esc(s.source||'未知')} ${esc(Object.entries(s.missing||{}).filter(([,v])=>v?.length).map(([k,v])=>k+': '+(Array.isArray(v)?v.join(', '):String(v))).join(' · '))}</p></div>${mgButton('skillToggle',s.disabled?'启用':'停用',`data-id="${esc(s.skillKey||s.name)}" data-enabled="${s.disabled?'true':'false'}"`)}</div>`).join('')||'<p>没有匹配的技能。</p>';
-  $('#extPlugins').innerHTML=d.plugins.filter(match).map(p=>`<div class="feature-row"><div><b>${esc(p.name||p.id)}</b> <span class="badge">${esc(p.status||'未知')}</span><p>${esc(p.description||'')}</p><p class="reco-note">${esc(p.id)} · ${esc(p.version||'未知版本')} · ${esc(p.origin||'未知来源')} ${esc(p.error||'')}</p></div><div class="feature-row-actions">${mgButton('pluginToggle',p.enabled?'停用':'启用',`data-id="${esc(p.id)}" data-enabled="${p.enabled?'false':'true'}"`)}${p.origin!=='bundled'?mgButton('pluginUninstall','卸载',`data-id="${esc(p.id)}"`):''}</div></div>`).join('')||'<p>没有匹配的插件。</p>';
+  $('#isolatedPlugins').innerHTML=(d.isolatedPlugins||[]).filter(match).map(p=>`<div class="feature-row"><div><b>${esc(p.id)}</b> <span class="badge">独立容器</span><p>允许工具：${esc(p.tools.join(', '))}；实例文件与模型密钥：不挂载</p><p class="reco-note">网络出口：${esc(p.origins.join(', ')||'默认拒绝')}；由宿主管理员管理。</p></div></div>`).join('');
+  $('#isolatedPlugins').innerHTML+=(d.isolatedChannels||[]).map(c=>`<div class="feature-row"><div><b>飞书 ${esc(c.id)}</b> <span class="badge">独立收发容器</span><p>文字适配 · 凭据代理；收发侧不持有 AppSecret、模型密钥或实例目录。</p></div></div>`).join('');
+  $('#extPlugins').innerHTML=d.plugins.filter(match).map(p=>`<div class="feature-row"><div><b>${esc(p.name||p.id)}</b> <span class="badge">${esc(p.status||'未知')}</span><p>${esc(p.description||'')}</p><p class="reco-note">${esc(p.id)} · ${esc(p.version||'未知版本')} · ${esc(p.origin||'未知来源')} · ${p.id==='manager-isolated-tools'?'受信任工具桥':'原生执行（共享网关权限）'} ${esc(p.error||'')}</p></div><div class="feature-row-actions">${mgButton('pluginToggle',p.enabled?'停用':'启用',`data-id="${esc(p.id)}" data-enabled="${p.enabled?'false':'true'}"`)}${p.origin!=='bundled'?mgButton('pluginUninstall','卸载',`data-id="${esc(p.id)}"`):''}</div></div>`).join('')||'<p>没有匹配的插件。</p>';
 }
 function renderFallbacks() {
   for(const key of ['model','imageModel']) {const e=$('#'+key+'Order');e.value=JSON.stringify(managementState.fallbackDraft[key]);if(e.dataset.savedValue!==undefined)e.dataset.dirty=mgChanged(e)?'1':'';}
@@ -136,10 +139,29 @@ document.addEventListener('click',async event=>{
       if(!confirm(`将技能「${slug}」安装到 Agent ${managementState.extensions.agentId} 的工作区？请先核对来源与技能详情。`))return;
       hint.textContent='安装技能中…';result=await api(mgBase()+'/extensions/skill/install',{method:'POST',body:JSON.stringify({revision:managementState.extensions.revision,agentId:managementState.extensions.agentId,slug})});refresh=true;
     }
-    if(action==='pluginInstall'||action==='pluginUninstall') {
-      const spec=$('#pluginSpec').value.trim();if(!confirm(action==='pluginInstall'?`安装 npm 插件「${spec}」并接受其声明能力？插件代码将在实例中运行，安装后需重启。`:`卸载插件「${id}」？插件文件将被移除，安装或业务配置请先备份。`))return;
-      hint.textContent=action==='pluginInstall'?'安装插件中，可能需要数分钟…':'卸载插件中…';
-      result=await api(mgBase()+'/extensions/plugin/'+(action==='pluginInstall'?'install':'uninstall'),{method:'POST',body:JSON.stringify({revision:managementState.extensions.revision,spec,pluginId:id})});refresh=true;
+    if(action==='pluginInstall'||action==='pluginConfirm') {
+      const base=mgBase(), revision=managementState.extensions.revision;
+      hint.textContent=action==='pluginInstall'?'检查 npm 来源与固定版本…':'验证制品与权限，可能需要数分钟…';
+      const review=managementState.pluginReview;
+      const body=action==='pluginInstall'?{revision,spec:$('#pluginSpec').value.trim()}:
+        {revision,spec:review?.spec,reviewToken:review?.reviewToken,confirmSpec:$('#pluginConfirmSpec').value.trim()};
+      // A failed or uncertain dispatch requires a fresh review, never a replay.
+      managementState.pluginReview=null;$('#pluginReview').classList.add('hidden');
+      result=await api(base+'/extensions/plugin/'+(action==='pluginInstall'?'review':'install'),{method:'POST',body:JSON.stringify(body)});
+      if(base!==mgBase())return;
+      if(result.reviewRequired) {
+        managementState.pluginReview=result;
+        $('#pluginReviewDetail').textContent=JSON.stringify(Object.fromEntries(Object.entries(result).filter(([key])=>!['reviewToken','reviewRequired'].includes(key))),null,2);
+        $('#pluginConfirmSpec').value='';$('#pluginReview').classList.remove('hidden');
+        $('#pluginReview [data-management="pluginConfirm"]').textContent=result.phase==='capabilities'?'批准所示权限并安装':'确认此来源并检查权限';
+        hint.textContent='请完整审查下方内容。审查有效期为 5 分钟；取消请刷新或离开此页面。';return;
+      }
+      refresh=true;
+    }
+    if(action==='pluginUninstall') {
+      if(!confirm(`卸载插件「${id}」？插件文件将被移除，安装或业务配置请先备份。`))return;
+      hint.textContent='卸载插件中…';
+      result=await api(mgBase()+'/extensions/plugin/uninstall',{method:'POST',body:JSON.stringify({revision:managementState.extensions.revision,pluginId:id})});refresh=true;
     }
     if(action.startsWith('fallback')) {
       const key=button.dataset.key,rows=managementState.fallbackDraft[key],index=Number(button.dataset.index);

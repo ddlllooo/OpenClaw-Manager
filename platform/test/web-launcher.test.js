@@ -13,7 +13,7 @@ test('portable daemon launcher verifies identity and stops only its own server',
     await launch('-d');
     const url=`http://127.0.0.1:${port}`;
     const identity=await fetch(url+'/_launcher/identity');assert.equal(identity.status,200);
-    const session=await fetch(url+'/api/session'),{csrf}=await session.json();
+    const session=await fetch(url+'/api/session',{headers:{Authorization:'Bearer '+JSON.parse(fs.readFileSync(path.join(root,fs.readdirSync(root).find(n=>n.startsWith('openclaw-web-'))),'utf8')).authToken}}),{csrf}=await session.json();
     const denied=await fetch(url+'/api/launcher/stop',{method:'POST',headers:{'Content-Type':'application/json',Cookie:session.headers.get('set-cookie').split(';')[0],'X-CSRF-Token':csrf},body:'{"token":"wrong"}'});assert.equal(denied.status,403);
     assert.equal((await fetch(url+'/_launcher/identity')).status,200);
     await launch('-s');

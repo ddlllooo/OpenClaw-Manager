@@ -1,4 +1,5 @@
 'use strict';
+process.env.MANAGER_AUTH_TOKEN = 'test-management-credential-0123456789abcdef';
 const test=require('node:test'),assert=require('node:assert/strict'),http=require('http');
 const express=require('express');
 const security=require('../src/security');
@@ -20,7 +21,7 @@ function request(url,method='GET',body,headers={}) {
 }
 test.before(async()=>{
   server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));port=server.address().port;
-  const session=await request('/api/session');cookie=session.headers['set-cookie'][0].split(';')[0];csrf=session.body.csrf;
+  const session=await request('/api/session','GET',undefined,{Authorization:'Bearer '+process.env.MANAGER_AUTH_TOKEN});cookie=session.headers['set-cookie'][0].split(';')[0];csrf=session.body.csrf;
 });
 test.after(async()=>{retention.preview=originalPreview;retention.execute=originalExecute;retention.history=originalHistory;server.closeAllConnections();await new Promise(r=>server.close(r));});
 test('preview and cleanup require an authenticated local session; mutation requires CSRF and a reviewed ID',async()=>{

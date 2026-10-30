@@ -121,6 +121,7 @@ router.post('/', async (req, res, next) => {
     let clonedFrom = null;
     if (body.cloneFrom) {
       const src = store.loadInstance(String(body.cloneFrom));
+      if(src.security?.profile==='ssh-sandbox-v1')throw new Error('安全实例请先创建独立目标实例，再运行 secure-instance.cjs 迁移；不能复用原实例的沙箱凭据');
       const srcCfg = store.readOpenclawConfig(src.id);
       if (srcCfg) {
         const parsed = JSON.parse(srcCfg);
@@ -147,6 +148,7 @@ router.post('/', async (req, res, next) => {
       reservationId = id;
       store.saveInstance(instance);
       store.initInstanceFiles(instance);
+      if (body.storage) await require('../storage').configurePolicy(id, body.storage);
       return instance;
     });
     const resources = instance.resources;
@@ -205,6 +207,7 @@ router.post('/', async (req, res, next) => {
     });
     store.saveInstance(instance);
 
+    await require('../storage').assertCanStart(id);
     await dockermod.startContainer(instance.containerId);
     monitor.track(instance);
     await syncFunction();
@@ -348,6 +351,7 @@ async function recreateContainer(instance) {
 
 router.post('/:id/stop', requireInstance, async (req, res, next) => {
   try {
+    await require('../run-intent').stop(req.instance.id);
     if (req.instance.containerId) {
       try {
         await dockermod.stopContainer(req.instance.containerId);
@@ -426,6 +430,8 @@ router.post('/:id/gateway-restart', requireInstance, async (req, res, next) => {
 // removal always runs first; if it fails the request errors out and neither
 // the record nor the data is touched, so the user can retry.
 router.delete('/:id', requireInstance, async (req, res, next) => {
+  try{await require('../run-intent').stop(req.instance.id,{reason:'delete'});}catch(error){return next(error);}
+  if(req.instance.security?.profile==='ssh-sandbox-v1')return res.status(409).json({error:'请先使用 secure-instance.cjs --rollback 保留执行卷快照并停止执行容器，再通过平台删除实例'});
   try {
     if (req.instance.containerId) {
       try {
@@ -482,7 +488,7 @@ router.get('/:id/logs', requireInstance, async (req, res, next) => {
     if (!req.instance.containerId) return res.json({ logs: '' });
     const tail = Math.min(5000, Math.max(10, Number(req.query.tail) || 200));
     const logs = await dockermod.getContainerLogs(req.instance.containerId, tail);
-    res.json({ logs });
+    res.json({ logs: require('../confidential').scrub(logs, req.instance) });
   } catch (err) { next(err); }
 });
 

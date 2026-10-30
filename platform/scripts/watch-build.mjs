@@ -17,7 +17,8 @@ const once = process.argv.includes('--once');
 const watchRoots = [
   path.join(root, 'server.js'),
   path.join(root, 'src'),
-  path.join(root, 'public'),
+  path.join(root, 'frontend'),
+  path.join(root, 'vite.config.mjs'),
   path.join(root, 'electron'),
 ];
 

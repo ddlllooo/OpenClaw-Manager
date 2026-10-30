@@ -59,7 +59,9 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(record['databaseCount'], 1)
         restored = self.root / 'restored'
         restored.mkdir()
-        with tarfile.open(str(self.destination / record['archive'])) as archive:
+        decrypted = self.root / 'restore.tar.gz'
+        backup.crypto_transform('decrypt', self.destination / record['archive'], decrypted, self.root / 'backup-keys' / 'key')
+        with tarfile.open(str(decrypted)) as archive:
             manifest = json.load(archive.extractfile('manifest.json'))
             self.assertNotIn('instances/active/link/do-not-follow', archive.getnames())
             self.assertTrue(archive.getmember('instances/active/link').issym())
@@ -74,6 +76,78 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(manifest['entries']['active/openclaw/state.sqlite-wal']['kind'], 'sqlite-sidecar')
         conn.close()
 
+    def test_encrypted_archive_restores_database_and_missing_key_fails_closed(self):
+        db = self.source / 'active' / 'state.sqlite'
+        with closing(sqlite3.connect(str(db))) as conn:
+            conn.execute('CREATE TABLE secrets(value TEXT)')
+            conn.execute("INSERT INTO secrets VALUES('synthetic-sensitive-message')")
+            conn.commit()
+        result = backup.run(self.source, self.destination)
+        record = result['lastSuccess']
+        encrypted = self.destination / record['archive']
+        self.assertTrue(record['archive'].endswith('.tar.gz.enc'))
+        self.assertEqual(record['encryption'], 'AES-256-GCM')
+        self.assertNotIn(b'test-secret', encrypted.read_bytes())
+        key = self.root / 'backup-keys' / 'key'
+        decrypted = self.root / 'restored.tar.gz'
+        backup.crypto_transform('decrypt', encrypted, decrypted, key)
+        with tarfile.open(str(decrypted)) as archive:
+            config = archive.extractfile('instances/active/openclaw/openclaw.json').read()
+            self.assertIn(b'test-secret', config)
+            restored_db = self.root / 'restored.sqlite'
+            restored_db.write_bytes(archive.extractfile('instances/active/state.sqlite').read())
+        with closing(sqlite3.connect(str(restored_db))) as conn:
+            self.assertEqual(conn.execute('SELECT value FROM secrets').fetchone()[0], 'synthetic-sensitive-message')
+        key.unlink()
+        with self.assertRaisesRegex(RuntimeError, '密钥缺失'):
+            backup.run(self.source, self.destination)
+        self.assertFalse(key.exists())
+        self.assertTrue(encrypted.exists())
+        self.assertFalse(list(self.destination.glob('.in-progress-*')))
+
+    def test_sandbox_workspace_is_included_in_authenticated_backup(self):
+        import io
+        record = {'id': 'active', 'security': {'profile': 'ssh-sandbox-v1', 'targets': {'main': {'workerId': 'fixture'}}}}
+        (self.source / 'active' / 'instance.json').write_text(json.dumps(record))
+        original_run = backup.subprocess.run
+        def helper(args, **kwargs):
+            if str(args[1]).endswith('backup-sandbox.cjs'):
+                with tarfile.open(args[-1], 'w') as archive:
+                    content = b'workspace-artifact'
+                    info = tarfile.TarInfo('workspaces/artifact.txt')
+                    info.size = len(content)
+                    archive.addfile(info, io.BytesIO(content))
+                return
+            return original_run(args, **kwargs)
+        with patch.object(backup.subprocess, 'run', side_effect=helper):
+            result = backup.run(self.source, self.destination)
+        decrypted = self.root / 'sandbox-restored.tar.gz'
+        backup.crypto_transform('decrypt', self.destination / result['lastSuccess']['archive'], decrypted, self.root / 'backup-keys' / 'key')
+        with tarfile.open(str(decrypted)) as archive:
+            payload = archive.extractfile('instances/active/manager/sandbox-workspace-archives/main.tar').read()
+        with tarfile.open(fileobj=io.BytesIO(payload)) as archive:
+            self.assertEqual(archive.extractfile('workspaces/artifact.txt').read(), b'workspace-artifact')
+
+    def test_plugin_isolation_change_during_backup_is_not_published(self):
+        record = {'id': 'active', 'security': {'profile': 'ssh-sandbox-v1', 'targets': {'main': {'workerId': 'fixture'}}},
+                  'pluginIsolation': {'targets': {'fixture': {'imageId': 'old'}}}}
+        record_file = self.source / 'active' / 'instance.json'
+        record_file.write_text(json.dumps(record))
+        original_run = backup.subprocess.run
+        def helper(args, **kwargs):
+            if str(args[1]).endswith('backup-sandbox.cjs'):
+                with tarfile.open(args[-1], 'w'):
+                    pass
+                record['pluginIsolation']['targets']['fixture']['imageId'] = 'changed'
+                record_file.write_text(json.dumps(record))
+                return
+            return original_run(args, **kwargs)
+        with patch.object(backup.subprocess, 'run', side_effect=helper):
+            with self.assertRaisesRegex(RuntimeError, '改变'):
+                backup.run(self.source, self.destination)
+        self.assertFalse(list(self.destination.glob('*.enc')))
+        self.assertFalse(list(self.destination.glob('.in-progress-*')))
+
     def test_failed_backup_keeps_success_and_never_prunes(self):
         success = backup.run(self.source, self.destination)['lastSuccess']
         existing = self.destination / success['archive']
@@ -85,7 +159,7 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(state['lastSuccess'], success)
         self.assertTrue(existing.exists())
         self.assertFalse(list(self.destination.glob('.in-progress-*')))
-        self.assertEqual(len(list(self.destination.glob('*.tar.gz'))), 1)
+        self.assertEqual(len(list(self.destination.glob('*.tar.gz.enc'))), 1)
 
     def test_retention_seven_calendar_days_and_latest_per_day(self):
         self.destination.mkdir()
@@ -134,7 +208,7 @@ class BackupTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, '数据库在线备份失败'):
             backup.run(self.source,self.destination)
         self.assertEqual(backup.read_json(self.destination/'status.json')['state'], 'failed')
-        self.assertFalse(list(self.destination.glob('*.tar.gz')))
+        self.assertFalse(list(self.destination.glob('*.tar.gz.enc')))
 
     def test_destination_cannot_recurse_into_source(self):
         with self.assertRaises(ValueError):

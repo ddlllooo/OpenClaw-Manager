@@ -7,6 +7,8 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
+import environment from '../src/env.js';
+environment.load();
 const root=path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const tag=crypto.createHash('sha256').update(root).digest('hex').slice(0,12);
 const stateFile=path.join(process.env.OPENCLAW_WEB_STATE_DIR||os.tmpdir(),`openclaw-web-${tag}.json`);
@@ -17,7 +19,7 @@ if(flag==='-s'||flag==='--stop'){
   const state=JSON.parse(fs.readFileSync(stateFile,'utf8'));
   const url=`http://127.0.0.1:${state.port}`;
   try{
-    const session=await fetch(url+'/api/session',{signal:AbortSignal.timeout(5000)});
+    const session=await fetch(url+'/api/session',{headers:{Authorization:'Bearer '+state.authToken},signal:AbortSignal.timeout(5000)});
     const cookie=session.headers.get('set-cookie')?.split(';')[0],{csrf}=await session.json();
     const result=await fetch(url+'/api/launcher/stop',{method:'POST',headers:{'Content-Type':'application/json',Cookie:cookie,'X-CSRF-Token':csrf},body:JSON.stringify({token:state.token}),signal:AbortSignal.timeout(5000)});
     if(!result.ok)throw new Error('后台身份校验失败');
@@ -37,7 +39,7 @@ if(flag==='-s'||flag==='--stop'){
       if(child.exitCode!==null)break;
       await new Promise(r=>setTimeout(r,500));
     }
-    if(ready){fs.writeFileSync(stateFile,JSON.stringify({port,token}),{mode:0o600});console.log(`后台服务 http://127.0.0.1:${port}/ · 日志 ${log}`);}
+    if(ready){fs.writeFileSync(stateFile,JSON.stringify({port,token,authToken:process.env.MANAGER_AUTH_TOKEN||fs.readFileSync(path.join(path.dirname(process.env.OPENCLAW_DATA_DIR||path.join(root,'data','instances')),'manager-auth','token'),'utf8').trim()}),{mode:0o600});console.log(`后台服务 http://127.0.0.1:${port}/ · 日志 ${log}`);}
     else{console.error('启动尚未就绪或端口已被占用，请检查日志：'+log);process.exitCode=1;}
   }else{
     child.on('exit',code=>{process.exitCode=code??1;});

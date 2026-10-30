@@ -21,6 +21,7 @@ async function ready(port, timeout = 60000) {
   return false;
 }
 async function replace(instance, start = true) {
+  if (start) await require('./storage').assertCanStart(instance.id);
   let old = null;
   if (instance.containerId) {
     try { old = await dm.inspectContainer(instance.containerId); }
@@ -30,14 +31,7 @@ async function replace(instance, start = true) {
   const wasRunning = Boolean(old && old.State.Running);
   const env = store.parseEnv(store.readEnvFile(instance.id));
   const oldContainer = old && dm.getContainer(old.Id);
-  let newId = null, renamed = false;
-  try {
-    if (oldContainer) {
-      if (wasRunning) await dm.stopContainer(old.Id, 30);
-      await oldContainer.rename({ name: `${instance.containerName}-rollback-${Date.now()}` });
-      renamed = true;
-    }
-    newId = await dm.createInstanceContainer({
+  const createOptions = {
       instanceId: instance.id, name: instance.containerName, image: old ? old.Image : instance.image,
       hostPort: instance.port, hostIP: '127.0.0.1',
       configDir: store.configDir(instance.id), workspaceDir: store.workspaceDir(instance.id), authDir: store.authDir(instance.id),
@@ -45,7 +39,17 @@ async function replace(instance, start = true) {
       nanoCpus: instance.resources?.nanoCpus || 0, memory: instance.resources?.memoryBytes || 0,
       cpuShares: instance.resources?.cpuShares || 0, pidsLimit: instance.resources?.pidsLimit || 0,
       template: old,
-    });
+  };
+  dm.validateInstanceOptions?.(createOptions);
+
+  let newId = null, renamed = false;
+  try {
+    if (oldContainer) {
+      if (wasRunning) await dm.stopContainer(old.Id, 30);
+      await oldContainer.rename({ name: `${instance.containerName}-rollback-${Date.now()}` });
+      renamed = true;
+    }
+    newId = await dm.createInstanceContainer(createOptions);
     if (start) {
       await dm.startContainer(newId);
       if (!await ready(instance.port)) throw new Error('新容器未就绪，已尝试回滚至原容器');
@@ -64,7 +68,7 @@ async function replace(instance, start = true) {
   } catch (err) {
     if (newId) await dm.removeContainer(newId, true).catch(() => {});
     if (oldContainer && renamed) await oldContainer.rename({ name: instance.containerName });
-    if (oldContainer && wasRunning) await dm.startContainer(old.Id);
+    if (oldContainer && wasRunning) {await require('./storage').assertCanStart(instance.id);await dm.startContainer(old.Id);}
     Object.assign(instance, original);
     store.saveInstance(original);
     throw err;
@@ -77,11 +81,14 @@ async function replace(instance, start = true) {
   return instance;
 }
 async function start(instance) {
+  await require('./storage').assertCanStart(instance.id);
+  require('./container-policy').assertAgentConfig(JSON.parse(store.readOpenclawConfig(instance.id) || '{}'));
   if (instance.envPending) return replace(instance, true);
   if (instance.containerId) {
     try {
       await dm.inspectContainer(instance.containerId);
       await dm.updateResources(instance.containerId, dm.resourceOptions(instance.resources || {}));
+      await dm.getContainer(instance.containerId).update({RestartPolicy:require('./startup-settings').restartPolicy(instance.id)});
       await dm.startContainer(instance.containerId).catch(err => { if (err.statusCode !== 304) throw err; });
       return instance;
     } catch (err) { if (err.statusCode !== 404) throw err; }
@@ -90,6 +97,8 @@ async function start(instance) {
   return replace(instance, true);
 }
 async function restart(instance) {
+  await require('./storage').assertCanStart(instance.id);
+  require('./container-policy').assertAgentConfig(JSON.parse(store.readOpenclawConfig(instance.id) || '{}'));
   try {
     if (instance.envPending || !instance.containerId) return await replace(instance, true);
     await dm.restartContainer(instance.containerId);
@@ -115,4 +124,8 @@ async function restart(instance) {
     throw err;
   }
 }
-module.exports = { replace, start, restart, ready };
+module.exports = {
+  replace:(instance,shouldRun=true)=>require('./run-intent').track(instance,shouldRun,()=>replace(instance,shouldRun)),
+  start:instance=>require('./run-intent').track(instance,true,()=>start(instance)),
+  restart:instance=>require('./run-intent').track(instance,true,()=>restart(instance)),ready,
+};

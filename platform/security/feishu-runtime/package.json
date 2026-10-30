@@ -1,0 +1,6 @@
+{
+  "name": "isolated-feishu-transport",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": { "@larksuiteoapi/node-sdk": "1.76.0" }
+}

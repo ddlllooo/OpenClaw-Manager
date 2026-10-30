@@ -1,0 +1,6 @@
+FROM node:24.22.1-alpine@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53
+COPY security/plugin-worker.cjs security/plugin-policy.cjs security/network-guard.cjs security/launch.cjs /opt/openclaw-security/
+LABEL openclaw.security.plugin="tool-worker-v1"
+USER 65532:65532
+ENTRYPOINT ["node", "/opt/openclaw-security/launch.cjs"]
+CMD ["node", "/opt/openclaw-security/plugin-worker.cjs"]

@@ -51,12 +51,14 @@ npm run web:stop
 
 ### 常用配置
 
-通过启动进程的环境变量配置；应用不会自动读取 `.env` 文件。
+应用启动时自动读取 `platform/.env`，非空进程环境变量优先。可复制 `platform/.env.example` 为 `.env`，填写 `MANAGER_AUTH_TOKEN`（至少 32 个字符的随机令牌）。此文件属于 Manager 配置，与实例自己的 `.env` 不同；修改后重启 Manager 生效。`.env` 不提交 Git，也不会被打入镜像或前端资源。
 
 | 环境变量 | 用途 |
 | --- | --- |
 | `MANAGER_PORT` | 管理端口，默认 `18080` |
 | `MANAGER_BIND_ADDRESS` | 监听地址，默认 `127.0.0.1` |
+| `MANAGER_AUTH_TOKEN` | 管理登录令牌；留空仍启用认证，自动使用持久随机令牌 |
+| `OPENCLAW_ENV_FILE` | 自定义 Manager `.env` 文件的绝对路径 |
 | `OPENCLAW_DATA_DIR` | 实例数据目录，直接指向 `instances` 目录 |
 | `OPENCLAW_SSH_STATE_DIR` | 已保存 SSH 设备与加密凭据的存储目录 |
 | `OPENCLAW_BACKUP_DIR` | 备份目录 |
@@ -75,7 +77,7 @@ npm run web:stop
 
 ### Docker 部署 Manager
 
-在 `platform/` 中将 [`compose.env.example`](platform/compose.env.example) 复制为 `compose.env`，修改宿主机绝对目录、Docker socket 路径、UID/GID 等配置，创建所需挂载目录后运行：
+在 `platform/` 中将 [`compose.env.example`](platform/compose.env.example) 复制为 `compose.env`，将 [`.env.example`](platform/.env.example) 复制为 `.env` 并填写登录令牌，修改宿主机绝对目录、Docker socket 路径、UID/GID 等配置，创建所需挂载目录后运行。Compose 将 `.env` 以只读文件挂载给 Manager，令牌不进入镜像：
 
 ```sh
 docker compose --env-file compose.env up -d --build

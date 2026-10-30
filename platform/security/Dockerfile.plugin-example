@@ -1,0 +1,2 @@
+FROM openclaw-security-plugin:latest
+COPY security/examples/uppercase.mjs /plugin/index.mjs

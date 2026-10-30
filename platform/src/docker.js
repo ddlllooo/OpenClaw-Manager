@@ -15,6 +15,7 @@ delete process.env.DOCKER_CONTEXT; // DOCKER_CONTEXT would override DOCKER_HOST 
 
 const docker = new Docker({ socketPath: SOCKET_PATH, timeout: 60000 });
 const previousStats = new Map();
+const policy = require('./container-policy');
 
 const DEFAULT_IMAGE = process.env.OPENCLAW_IMAGE || 'docker.io/openclaw/openclaw:latest';
 
@@ -157,26 +158,31 @@ async function getStats(containerId) {
 
 async function inspectContainer(containerId) {
   const container = docker.getContainer(containerId);
-  return container.inspect();
+  return policy.owned(await container.inspect());
 }
 
 async function startContainer(containerId) {
+  await inspectContainer(containerId);
   await docker.getContainer(containerId).start();
 }
 
 async function stopContainer(containerId, timeout = 20) {
+  await inspectContainer(containerId);
   await docker.getContainer(containerId).stop({ t: timeout });
 }
 
 async function restartContainer(containerId, timeout = 20) {
+  await inspectContainer(containerId);
   await docker.getContainer(containerId).restart({ t: timeout });
 }
 
 async function removeContainer(containerId, force = false) {
+  await inspectContainer(containerId);
   await docker.getContainer(containerId).remove({ force, v: false });
 }
 
 async function updateResources(containerId, { cpuShares, nanoCpus, memory, pidsLimit }) {
+  await inspectContainer(containerId);
   const update = {};
   if (cpuShares !== undefined && cpuShares !== null) update.CpuShares = cpuShares;
   if (nanoCpus !== undefined && nanoCpus !== null) update.NanoCpus = nanoCpus;
@@ -186,8 +192,44 @@ async function updateResources(containerId, { cpuShares, nanoCpus, memory, pidsL
   await docker.getContainer(containerId).update(update);
 }
 
+// Internal bridge disables external routing while retaining host management access.
+async function instanceNetwork(instanceId) {
+  const mode=process.env.OPENCLAW_INSTANCE_EGRESS||'compatible';
+  if(mode==='compatible')return 'bridge';
+  if(mode!=='offline')throw new Error('OPENCLAW_INSTANCE_EGRESS 必须为 compatible 或 offline');
+  const name='openclaw-isolated-'+instanceId;
+  let network;
+  try { network=await docker.getNetwork(name).inspect(); }
+  catch(error) {
+    if(error.statusCode!==404)throw error;
+    await docker.createNetwork({Name:name,Driver:'bridge',Internal:true,EnableIPv6:false,
+      Options:{'com.docker.network.bridge.enable_icc':'false'},Labels:{'openclaw.instance':instanceId,'openclaw.network':'isolated'}});
+    network=await docker.getNetwork(name).inspect();
+  }
+  if(!network.Internal || network.Driver!=='bridge' || network.Labels?.['openclaw.instance']!==instanceId || network.Labels?.['openclaw.network']!=='isolated' || network.Options?.['com.docker.network.bridge.enable_icc']!=='false')throw new Error('隔离网络配置或归属不符，拒绝启动');
+  return name;
+}
+
 // Create the gateway container for one instance. Ownership (config dir, files)
 // is passed to the image's node user (uid 1000) via HostConfig chown flags.
+function validateInstanceOptions(opts) {
+  const { instanceId } = opts;
+  const store = require('./instances');
+  try { if(store.loadInstance(instanceId).security?.profile==='ssh-sandbox-v1')throw Object.assign(new Error('安全实例重建/升级请使用 secure-instance.cjs，以同步更新执行容器和网络规则'),{statusCode:409}); } catch(error) { if(error.statusCode===409)throw error; if(error.code&&error.code!=='ENOENT')throw error; }
+  policy.assertAgentConfig(JSON.parse(store.readOpenclawConfig(opts.instanceId) || '{}'));
+  const mountGuard=require('./storage').requiresMountGuard(instanceId);
+  const binds = policy.mounts(opts, store, runtimePlatform.bindPath).map(b=>mountGuard?b+':consistent':b);
+  const template = opts.template;
+  const safeHostConfig = policy.hostConfig(template?.HostConfig);
+  const instanceUser = policy.user(runtimePlatform.instanceUser() || template?.Config?.User || 'node');
+  const normalized=rows=>rows.map(b=>mountGuard?b.replace(/:consistent$/,''):b).sort();
+  const legacyBinds=[['openclaw','/home/node/.openclaw'],['workspace','/home/node/.openclaw/workspace'],['auth','/home/node/.config/openclaw']].map(([folder,target])=>`${runtimePlatform.bindPath(path.join(store.instancesRoot(),instanceId,folder))}:${target}`);
+  if (template?.HostConfig?.Binds && JSON.stringify(normalized(template.HostConfig.Binds)) !== JSON.stringify(normalized(binds)) && !(mountGuard&&JSON.stringify(normalized(template.HostConfig.Binds))===JSON.stringify(normalized(legacyBinds)))) {
+    throw new Error('旧容器挂载与受管实例目录不一致，拒绝继承；原容器未改动');
+  }
+  return {binds,template,safeHostConfig,instanceUser};
+}
+
 async function createInstanceContainerInternal(opts) {
   const {
     instanceId, name, image, hostPort, hostIP,
@@ -195,13 +237,8 @@ async function createInstanceContainerInternal(opts) {
     env, cpuShares, nanoCpus, memory, pidsLimit,
   } = opts;
 
-  const binds = [
-    `${runtimePlatform.bindPath(configDir)}:/home/node/.openclaw`,
-    `${runtimePlatform.bindPath(workspaceDir)}:/home/node/.openclaw/workspace`,
-    `${runtimePlatform.bindPath(authDir)}:/home/node/.config/openclaw`,
-  ];
-
-  const template = opts.template;
+  const {binds,template,safeHostConfig,instanceUser} = validateInstanceOptions(opts);
+  const networkMode = await instanceNetwork(instanceId);
   const imageInfo = await docker.getImage(image).inspect().catch(err => {
     if (err.statusCode !== 404 || resolveImage(image) === image) throw err;
     return docker.getImage(resolveImage(image)).inspect();
@@ -229,18 +266,20 @@ async function createInstanceContainerInternal(opts) {
     Env: [...configuredEnv].map(([key,value]) => `${key}=${value}`),
     ExposedPorts: { [`${GATEWAY_PORT_INTERNAL}/tcp`]: {} },
     HostConfig: {
-      ...(template?.HostConfig || {}),
-      PortBindings: { [`${GATEWAY_PORT_INTERNAL}/tcp`]: [{ HostIp: hostIP || '127.0.0.1', HostPort: String(hostPort) }] },
-      Binds: template?.HostConfig?.Binds || binds,
+      ...safeHostConfig,
+      NetworkMode: networkMode,
+      ...(process.env.OPENCLAW_INSTANCE_EGRESS === 'offline' ? {Dns:['127.0.0.1']} : {}),
+      PortBindings: { [`${GATEWAY_PORT_INTERNAL}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: String(hostPort) }] },
+      Binds: binds,
       RestartPolicy: require('./startup-settings').restartPolicy(instanceId, template?.HostConfig?.RestartPolicy || { Name: 'unless-stopped' }),
       Memory: memory || 0,
       MemorySwap: memory ? Math.max(memory * 2, template?.HostConfig?.MemorySwap || 0) : -1,
-      NanoCpus: nanoCpus || 0, CpuShares: cpuShares || 0, PidsLimit: pidsLimit || 0,
+      NanoCpus: nanoCpus || 0, CpuShares: cpuShares || 0, PidsLimit: pidsLimit || 512,
       LogConfig: { Type: 'json-file', Config: { 'max-size': '10m', 'max-file': '3' } },
     },
     ...(healthcheck ? { Healthcheck: healthcheck } : {}),
     WorkingDir: template?.Config?.WorkingDir || '/home/node',
-    User: runtimePlatform.instanceUser() || template?.Config?.User || 'node',
+    User: instanceUser,
     Entrypoint: template?.Config?.Entrypoint || ['openclaw'],
     Tty: false, OpenStdin: false,
     Cmd: template?.Config?.Cmd || ['gateway', '--allow-unconfigured'],
@@ -333,7 +372,7 @@ function resourceOptions(r) {
   return { nanoCpus: r.nanoCpus ?? 0, cpuShares: r.cpuShares ?? 0, memory: r.memoryBytes ?? 0, pidsLimit: r.pidsLimit ?? 0 };
 }
 module.exports = {
-  resolveImage, splitImageTag, resourceOptions, resolveSocketPath,
+  validateInstanceOptions, instanceNetwork, resolveImage, splitImageTag, resourceOptions, resolveSocketPath,
   docker,
   DEFAULT_IMAGE,
   MIRROR_PREFIX,

@@ -162,3 +162,40 @@ test('schema validation failure does not change live config; conflict retains ex
   assert.deepEqual(JSON.parse(store.readOpenclawConfig('fixture')), { external: 'newer configuration' });
   changeDuringValidation = false;
 });
+
+
+test('HTTP detection and edit reject new origins before sending a stored key', async () => {
+  store.writeOpenclawConfig('fixture', JSON.stringify(fixture()));
+  const originalFetch = global.fetch; let outbound = 0;
+  global.fetch = async (url, options) => {
+    if (String(url).startsWith('https://attacker.invalid')) { outbound++; throw Error('must not send'); }
+    return originalFetch(url, options);
+  };
+  try {
+    for (const [route, method, body] of [
+      ['/detect','POST',{model:'vision',baseUrl:'https://attacker.invalid'}],
+      ['/vision','PUT',{baseUrl:'https://attacker.invalid',input:'auto'}],
+      ['/detect','POST',{model:'new',copyKeyFrom:'vision',baseUrl:'https://attacker.invalid'}],
+    ]) {
+      const response = await fetch(base+route,{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      assert.equal(response.status,400); assert.equal(outbound,0);
+      assert.equal(config.find(JSON.parse(store.readOpenclawConfig('fixture')),'vision').provider.baseUrl,'https://example.invalid/v1');
+    }
+  } finally { global.fetch = originalFetch; }
+});
+test('renaming with automatic metadata keeps credentials at the existing origin', async () => {
+  store.writeOpenclawConfig('fixture', JSON.stringify(fixture()));
+  const originalFetch=global.fetch; let outbound=0;
+  global.fetch=async(url,options)=>{
+    if(String(url)==='https://example.invalid/v1/models') {
+      outbound++;assert.equal(options.headers.Authorization,'Bearer real-key');assert.equal(options.redirect,'error');
+      return {ok:true,json:async()=>({data:[{id:'renamed',input:['text','image'],contextWindow:1048576}]})};
+    }
+    return originalFetch(url,options);
+  };
+  try {
+    const response=await fetch(base+'/vision',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'renamed',input:'auto',contextWindow:'auto'})});
+    assert.equal(response.status,200,await response.text());assert.equal(outbound,1);
+    assert.equal(config.find(JSON.parse(store.readOpenclawConfig('fixture')),'renamed').provider.apiKey,'real-key');
+  } finally {global.fetch=originalFetch;}
+});

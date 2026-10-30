@@ -1,8 +1,12 @@
 'use strict';
 
+require('./src/env').load();
+
 const path = require('path');
 const express = require('express');
 
+const dockerControl = require('./src/docker-control-launcher');
+const controlReady = dockerControl.start();
 const dockermod = require('./src/docker');
 const store = require('./src/instances');
 const monitor = require('./src/monitor');
@@ -18,7 +22,7 @@ const terminal = require('./src/terminal');
 const security = require('./src/security');
 const operations = require('./src/operations');
 const backups = require('./src/backups');
-const BUILD = '2026.10.16-device-labels2';
+const BUILD = '2026.10.30-apfs-recovery2';
 const startedAt = new Date().toISOString();
 
 const app = express();
@@ -83,7 +87,10 @@ if (process.env.OPENCLAW_WEB_LAUNCH_TOKEN) {
     res.json({ok:true});setImmediate(() => process.emit('SIGTERM'));
   });
 }
-app.use(express.static(path.join(__dirname, 'public')));
+// Vite owns the browser entry point. Legacy scripts remain in the repository
+// during migration review but are never served or executed by the React app.
+app.use(express.static(path.join(__dirname, 'public', 'ui')));
+app.get('/', (req, res) => res.status(503).type('text').send('Frontend assets missing. Run npm run build before starting the manager.'));
 
 app.get('/api/system', async (req, res, next) => {
   try {
@@ -115,6 +122,7 @@ app.use('/api/instances', openclawRouter);
 app.use('/api/instances', sessionsRouter);
 app.use('/api/instances', featuresRouter);
 app.use('/api/instances', managementRouter);
+app.use('/api/instances', require('./src/routes/storage'));
 app.use('/api/images', imagesRouter);
 app.use('/api/backups', backups.router);
 app.use('/api/startup', startupRouter);
@@ -125,14 +133,25 @@ app.use('/api', (req, res) => res.status(404).json({ error: '接口不存在' })
 // Error handler (keeps JSON shape; dockerode errors get friendly messages).
 app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
   const status = err.statusCode && err.statusCode >= 400 ? err.statusCode : 500;
-  console.error('[api-error]', err.statusCode || '', String(err.message || 'API failure').replace(/(?:sk-|token[=: ]|secret[=: ])[A-Za-z0-9_-]+/gi, '[redacted]').slice(0, 300));
-  res.status(status).json({ error: dockermod.shortDockerError(err) });
+  console.error('[api-error]', status, 'Request failed');
+  let message = '请求失败，请检查服务状态';
+  try {
+    message = dockermod.shortDockerError(err);
+    for (const id of store.listInstanceIds()) message = require('./src/confidential').scrub(message, store.loadInstance(id));
+    message = message.split(security.managementToken()).join('[已脱敏]');
+  } catch { message = '请求失败，请检查服务状态'; }
+  res.status(status).json({ error: message });
 });
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
 let listenServer = null;
+let channelBridge = null;
 
 async function main() {
+  await controlReady;
+  security.managementToken();
+  channelBridge = require('./src/channel-bridge').start();
+  console.log(`Management credential file: ${security.credentialFile()} (or MANAGER_AUTH_TOKEN)`);
   await syncRuntimeState();
   instancesRouter.bind(getState, syncRuntimeState);
   listenServer = await new Promise((resolve) => {
@@ -148,6 +167,7 @@ async function main() {
   try{require('./src/routes/connections').startConnections();}catch{console.error('SSH 设备恢复失败，请检查设备存储和加密密钥；已保留原文件。');}
   terminal.parseUpgrades(listenServer);
   require('./src/retention').start();
+  require('./src/storage').start();
 
   // periodic reconciliation so externally-stopped/removed containers reflect
   let reconciling = false;
@@ -163,14 +183,19 @@ async function main() {
 
 module.exports = { app };
 for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => {
+  channelBridge?.close();
+  dockerControl.stop();
   require('./src/routes/connections').closeConnections();
   monitor.stopLoops(); clearInterval(app.get('reconcileTimer'));
   require('./src/retention').stop();
+  require('./src/storage').stop();
   for (const ws of terminal.clients) ws.close();
   listenServer?.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 3000).unref();
 });
+process.on('exit', () => dockerControl.stop());
 main().catch((err) => {
+  dockerControl.stop();
   console.error('启动失败:', err.message);
   process.exit(1);
 });

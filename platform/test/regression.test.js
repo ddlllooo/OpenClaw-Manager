@@ -1,4 +1,5 @@
 'use strict';
+process.env.MANAGER_AUTH_TOKEN = 'test-management-credential-0123456789abcdef';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -33,10 +34,11 @@ const docker = {
 require.cache[require.resolve('../src/docker')] = { id: require.resolve('../src/docker'), filename: require.resolve('../src/docker'), loaded: true, exports: docker };
 require.cache[require.resolve('../src/validation')] = { id: 'validation', loaded: true, exports: { validate: async () => {} } };
 require.cache[require.resolve('../src/lifecycle')] = { id: 'lifecycle', loaded: true, exports: { ready: async () => true, start: async () => {}, restart: async () => {} } };
+require.cache[require.resolve('../src/gateway-rpc')] = { id:'gateway-rpc',loaded:true,exports:{rpc:async(instance,method,params)=>{calls.push(['rpc',method,params]);return {ok:true};}} };
 cp.execFile = (cmd,args,opts,cb) => {
   calls.push(['cli', args]);
   if (cliFail) cb(new Error('nonzero exit'), 'warning', 'fatal failure');
-  else cb(null, '{}', '');
+  else cb(null, args.includes('plugins')&&args.includes('list')?'{"plugins":[{"id":"feishu"}]}':'{}', '');
   return { stdin: { end() {} } };
 };
 const express = require('express');
@@ -72,7 +74,7 @@ function fixture(id='fixture') {
 }
 test.before(async () => {
   server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));port=server.address().port;
-  const result=await request('/api/session','GET',undefined,{},false);
+  const result=await request('/api/session','GET',undefined,{Authorization:'Bearer '+process.env.MANAGER_AUTH_TOKEN},false);
   cookie=result.headers['set-cookie'][0].split(';')[0];csrf=result.body.csrf;
 });
 test.after(async () => { cp.execFileSync=originalExec; server.closeAllConnections();await new Promise(r=>server.close(r)); });
@@ -114,10 +116,15 @@ test('Feishu blank secret preserves the real credential and skips reinstall',asy
   assert.equal(result.status,200);
   const cli=calls.filter(c=>c[0]==='cli').map(c=>c[1]);
   assert.ok(!cli.some(args=>args.includes('install')));
-  const channelWrite=cli.find(args=>args.includes('channels.feishu'));
-  assert.ok(channelWrite.some(arg=>arg.includes('dummy-real-secret')));
+  assert.equal(JSON.parse(store.readOpenclawConfig('fixture')).channels.feishu.appSecret,'dummy-real-secret');
+  assert.ok(!JSON.stringify(cli).includes('dummy-real-secret'));
+  assert.deepEqual(calls.find(c=>c[0]==='rpc'),['rpc','plugins.setEnabled',{pluginId:'feishu',enabled:true}]);
   const invalid=await request('/api/instances/fixture/feishu','PUT',{appId:'dummy-app',appSecret:'__OPENCLAW_REDACTED__'});
   assert.equal(invalid.status,400);
+});
+test('Feishu shortcut cannot reinstall or enable the native plugin after isolation',async()=>{
+  const instance=fixture();store.saveInstance({...instance,channelIsolation:{profile:'feishu-text-v1',accounts:{}}});calls.length=0;
+  const response=await request('/api/instances/fixture/feishu','PUT',{appId:'dummy-app',appSecret:'dummy-real-secret'});assert.equal(response.status,409);assert.ok(!calls.some(c=>c[0]==='cli'||c[0]==='rpc'));
 });
 test('CLI warning stdout cannot mask a failed deletion',async()=>{
   fixture();cliFail=true;
@@ -156,7 +163,7 @@ test('a delayed response cannot populate a different instance view',async()=>{
   const apiCode=source.slice(source.indexOf('let csrfToken'),source.indexOf('function logEvent'));
   let complete;
   const state={selectedId:'first'};
-  const context={state,DOMException,fetch:async url=>url==='/api/session'?{ok:true,json:async()=>({csrf:'dummy'})}:await new Promise(resolve=>{complete=resolve;})};
+  const context={state,DOMException,URLSearchParams,location:{hash:''},fetch:async url=>url==='/api/session'?{ok:true,json:async()=>({csrf:'dummy'})}:await new Promise(resolve=>{complete=resolve;})};
   vm.createContext(context);vm.runInContext(apiCode+'\nthis.runApi=api;',context);
   const response=context.runApi('/api/instances/first/model');
   await new Promise(resolve=>setImmediate(resolve));
@@ -173,10 +180,26 @@ test('failed container replacement restores the original container and record',a
     startContainer:async id=>{events.push(['start',id]);if(id==='replacement')throw new Error('startup failed');},
     removeContainer:async id=>events.push(['remove',id])};
   const fakeStore={parseEnv:()=>({}),readEnvFile:()=>'',configDir:()=>'/dummy',workspaceDir:()=>'/dummy/workspace',authDir:()=>'/dummy/auth',saveInstance:value=>{saved=JSON.parse(JSON.stringify(value));}};
-  vm.runInNewContext(source,{require:name=>name==='./instances'?fakeStore:name==='./docker'?dm:require(name),module,console,setTimeout});
+  vm.runInNewContext(source,{require:name=>name==='./run-intent'?{track:(_i,_r,fn)=>fn()}:name==='./storage'?{assertCanStart:async()=>{}}:name==='./instances'?fakeStore:name==='./docker'?dm:require(name),module,console,setTimeout});
   await assert.rejects(module.exports.replace(inst),/startup failed/);
   assert.equal(saved.containerId,'original');
   assert.ok(events.some(event=>event[0]==='rename'&&event[1]==='openclaw-rollbackcase'));
   assert.ok(events.some(event=>event[0]==='start'&&event[1]==='original'));
   assert.ok(events.some(event=>event[0]==='remove'&&event[1]==='replacement'));
+});
+
+
+test('config editor masks credentials and restores unchanged placeholders without losing edits',async()=>{
+ fixture();const result=await request('/api/instances/fixture/config');assert.equal(result.status,200);
+ assert.ok(!result.body.content.includes('dummy-real-secret'));assert.ok(!result.body.content.includes('dummy-token'));
+ const candidate=JSON.parse(result.body.content);candidate.description='edited';
+ const saved=await request('/api/instances/fixture/config','PUT',{content:JSON.stringify(candidate),revision:result.body.revision});assert.equal(saved.status,200);
+ const stored=JSON.parse(store.readOpenclawConfig('fixture'));assert.equal(stored.channels.feishu.appSecret,'dummy-real-secret');assert.equal(stored.gateway.auth.token,'dummy-token');assert.equal(stored.description,'edited');
+ const fresh=await request('/api/instances/fixture/config');const tampered=JSON.parse(fresh.body.content);tampered.channels.feishu.appSecret=tampered.gateway.auth.token;
+ assert.equal((await request('/api/instances/fixture/config','PUT',{content:JSON.stringify(tampered),revision:fresh.body.revision})).status,400);
+});
+test('logs redact configured keys, env values and bearer strings before returning to the browser',async()=>{
+ fixture();docker.getContainerLogs=async()=> 'safe entry dummy-real-secret abcde dummy-token Bearer unconfigured-value';
+ const result=await request('/api/instances/fixture/logs');assert.equal(result.status,200);assert.match(result.body.logs,/safe entry/);
+ for(const secret of ['dummy-real-secret','abcde','dummy-token','unconfigured-value'])assert.ok(!result.body.logs.includes(secret));
 });

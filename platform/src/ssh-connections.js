@@ -116,7 +116,7 @@ function sourceArchive(root=path.join(__dirname,'..')) {
     if(!stat.isFile())throw error('部署源码包含不支持的文件');
     pack.entry({name:relative.replace(/\\/g,'/'),mode:0o644,size:stat.size},fs.readFileSync(file));
   };
-  setImmediate(()=>{try{for(const name of ['Dockerfile','package.json','package-lock.json','server.js','src','public','scripts','control-ui-patches'])add(name);pack.finalize();}catch(e){pack.destroy(e);}});
+  setImmediate(()=>{try{for(const name of ['Dockerfile','package.json','package-lock.json','server.js','src','public','scripts','control-ui-patches','security'])add(name);for(const name of ['frontend','vite.config.mjs'])if(fs.existsSync(path.join(root,name)))add(name);pack.finalize();}catch(e){pack.destroy(e);}});
   return pack;
 }
 async function provision(client,target,record,options={}) {
@@ -159,10 +159,23 @@ async function provision(client,target,record,options={}) {
   const group=await execute(client,['run','--pull=never','--rm','-i','--entrypoint','node','-v',`${volume}:${root}`,
     '-v',`${socket}:/var/run/docker.sock`,image],require('stream').Readable.from([setup]));
   if(!/^\d+$/.test(group))throw error('无法确定远程 Docker socket 权限');
+  const controlVolume=name+'-control';
+  await execute(client,['volume','create',controlVolume]);
+  const controlName=name+'-control';
+  const controlListed=await execute(client,['container','ls','-a','--filter','name='+controlName,'--format','{{json .}}']);
+  if(controlListed.trim())throw error('控制服务名称已被占用，请先检查远程控制服务；未替换已有容器');
+  await execute(client,['run','--pull=never','-d','--init','--user','0:0','--name',controlName,
+    '--label','openclaw.docker-control=true','--restart','unless-stopped','--network','none',
+    '--read-only','--cap-drop','ALL','--cap-add','DAC_OVERRIDE','--security-opt','no-new-privileges:true',
+    '-v',`${volume}:${root}:ro`,'-v',`${socket}:/var/run/docker.sock`,'-v',`${controlVolume}:/run/openclaw-docker`,
+    '-e',`OPENCLAW_DATA_DIR=${root}/instances`,'-e','OPENCLAW_CONTROL_SOCKET_MODE=666',
+    '--entrypoint','node',image,'scripts/docker-control.cjs']);
   record.stage='正在启动远程管理服务';
-  await execute(client,['run','--pull=never','-d','--init','--user','1000:1000','--group-add',group,'--name',name,'--label','openclaw.ssh-manager=true','--label','openclaw.manager=true',
+  await execute(client,['run','--pull=never','-d','--init','--user','1000:1000','--name',name,'--label','openclaw.ssh-manager=true','--label','openclaw.manager=true',
     '--restart','unless-stopped','-p',`127.0.0.1:${target.remotePort}:${target.remotePort}`,
-    '-v',`${volume}:${root}`,'-v',`${socket}:/var/run/docker.sock`,
+    '-v',`${volume}:${root}`,'-v',`${controlVolume}:/run/openclaw-docker:ro`,
+    '-e','OPENCLAW_CONTROL_SOCKET=/run/openclaw-docker/control.sock',
+    '-e','OPENCLAW_CHANNEL_BRIDGE_LISTEN=0.0.0.0:18081',
     '-e',`MANAGER_PORT=${target.remotePort}`,'-e',`OPENCLAW_DATA_DIR=${root}/instances`,
     '-e',`OPENCLAW_BACKUP_DIR=${root}/backups`,'-e',`OPENCLAW_DEPLOYMENT_TARGET=${target.host}`,
     '--log-driver','json-file','--log-opt','max-size=10m','--log-opt','max-file=3',image]);
@@ -226,7 +239,7 @@ async function attachManager(record,target,generation=record.generation){
     let ready=false;
     for(let i=0;i<30;i++){
       if(record.status!=='connecting'||record.generation!==generation)return;
-      try{await requestJSON(client,target.remotePort,'/api/session',{host:`127.0.0.1:${target.remotePort}`});ready=true;break;}catch{}
+      try{await requestJSON(client,target.remotePort,'/api/session',{host:`127.0.0.1:${target.remotePort}`},{allowAuthenticationRequired:true});ready=true;break;}catch{}
       await new Promise(resolve=>setTimeout(resolve,1000));
     }
     if(record.status!=='connecting'||record.generation!==generation)return;

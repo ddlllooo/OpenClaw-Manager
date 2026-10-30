@@ -24,13 +24,15 @@ import tarfile
 import tempfile
 import time
 import uuid
+import subprocess
+import secrets
 from zoneinfo import ZoneInfo
 
 try:
     TZ = ZoneInfo('Asia/Shanghai')
 except Exception:
     TZ = dt.timezone(dt.timedelta(hours=8), 'Asia/Shanghai')
-ARCHIVE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{6}-[0-9a-f]{8}\.tar\.gz$')
+ARCHIVE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{6}-[0-9a-f]{8}\.tar\.gz(?:\.enc)?$')
 
 
 def now():
@@ -237,6 +239,38 @@ def capture(source, stage, heartbeat=lambda: None):
             'instances': instances, 'entries': entries}
 
 
+def capture_sandbox_workspaces(source, stage, manifest):
+    for instance in manifest['instances']:
+        directory = instance['directory']
+        record = read_json(source / directory / 'instance.json', {})
+        if (source / directory / 'manager/security/migration.lock').exists():
+            raise RuntimeError('实例正在安全迁移，备份延后重试')
+        staged_record = read_json(stage / 'instances' / directory / 'instance.json', {})
+        if any((staged_record.get(key) or {}) != (record.get(key) or {}) for key in ('security', 'pluginIsolation', 'channelIsolation')):
+            raise RuntimeError('安全实例配置在捕获期间改变，请重试')
+        security = record.get('security') or {}
+        if security.get('profile') != 'ssh-sandbox-v1':
+            continue
+        node = os.environ.get('OPENCLAW_BACKUP_NODE') or shutil.which('node')
+        if not node:
+            raise RuntimeError('沙箱工作区备份需要 Node.js；未发布不完整备份')
+        base = directory + '/manager/sandbox-workspace-archives'
+        target = stage / 'instances' / base
+        target.mkdir(parents=True, exist_ok=True, mode=0o700)
+        for parent in [directory + '/manager', base]:
+            manifest['entries'].setdefault(parent, {'kind': 'directory', 'mode': 0o700})
+        for agent in security.get('targets', {}):
+            if not re.fullmatch(r'[a-zA-Z0-9_-]{1,80}', agent):
+                raise RuntimeError('沙箱工作区标识无效')
+            output = target / (agent + '.tar')
+            env = {**os.environ, 'OPENCLAW_DATA_DIR': str(source)}
+            subprocess.run([node, str(Path(__file__).with_name('backup-sandbox.cjs')), record['id'], agent, str(output)], env=env, check=True, capture_output=True, timeout=150)
+            manifest['entries'][base + '/' + agent + '.tar'] = {'kind': 'file', 'capture': 'paused-sandbox-workspace', 'bytes': output.stat().st_size, 'sha256': sha256(output)}
+        current_record = read_json(source / directory / 'instance.json', {})
+        if any((current_record.get(key) or {}) != (record.get(key) or {}) for key in ('security', 'pluginIsolation', 'channelIsolation')):
+            raise RuntimeError('沙箱配置在备份期间改变，请重试')
+
+
 def verify_archive(archive, manifest):
     expected = {'instances/' + name: entry for name, entry in manifest['entries'].items() if not entry.get('excluded')}
     seen = set()
@@ -264,7 +298,7 @@ def verify_archive(archive, manifest):
 
 def completed(destination):
     records = []
-    for file in destination.glob('*.tar.gz.json'):
+    for file in destination.glob('*.tar.gz*.json'):
         record = read_json(file)
         name = record.get('archive', '')
         if ARCHIVE_RE.fullmatch(name) and file.name == name + '.json' and (destination / name).is_file():
@@ -289,6 +323,34 @@ def prune(destination, current):
         archive.with_name(archive.name + '.json').unlink()
         removed.append(archive.name)
     return removed
+
+
+def crypto_transform(mode, source, target, key):
+    node = os.environ.get('OPENCLAW_BACKUP_NODE') or shutil.which('node')
+    if not node:
+        raise RuntimeError('加密备份需要 Node.js；请设置 OPENCLAW_BACKUP_NODE，未生成明文备份')
+    subprocess.run([node, str(Path(__file__).with_name('backup_crypto.cjs')), mode, str(source), str(target), str(key)], check=True, capture_output=True, timeout=1800)
+
+
+def backup_key(source, destination):
+    key = Path(os.environ.get('OPENCLAW_BACKUP_KEY_FILE') or str(source.parent / 'backup-keys' / 'key')).absolute()
+    if key.is_symlink():
+        raise RuntimeError('备份密钥不能是符号链接')
+    resolved = key.resolve()
+    if resolved == source or source in resolved.parents or resolved == destination or destination in resolved.parents:
+        raise RuntimeError('备份密钥必须位于实例目录和备份目录之外')
+    key.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if not key.exists():
+        if any(destination.glob('*.tar.gz.enc')):
+            raise RuntimeError('备份密钥缺失；禁止生成新密钥覆盖原有恢复能力')
+        with key.open('xb') as stream:
+            os.chmod(str(key), 0o600)
+            stream.write(secrets.token_bytes(32))
+            stream.flush()
+            os.fsync(stream.fileno())
+    if key.stat().st_size != 32:
+        raise RuntimeError('备份密钥无效；保留旧备份，未自动替换密钥')
+    return key
 
 
 def run(source, destination, scheduled=False):
@@ -341,6 +403,7 @@ def run(source, destination, scheduled=False):
             raise RuntimeError('备份磁盘空间不足，旧备份已保留')
         stage = Path(tempfile.mkdtemp(prefix='.in-progress-', dir=str(destination)))
         manifest = capture(source, stage, heartbeat)
+        capture_sandbox_workspaces(source, stage, manifest)
         atomic_json(stage / 'manifest.json', manifest)
         name = started.strftime('%Y-%m-%dT%H%M%S') + '-' + uuid.uuid4().hex[:8] + '.tar.gz'
         temporary = stage / 'archive.tar.gz'
@@ -355,6 +418,16 @@ def run(source, destination, scheduled=False):
                   'fileCount': sum('sha256' in item for item in manifest['entries'].values()),
                   'databaseCount': sum(item['kind'] == 'sqlite' for item in manifest['entries'].values()),
                   'durationSeconds': round((now() - started).total_seconds(), 2)}
+        key = backup_key(source, destination)
+        encrypted = stage / 'archive.tar.gz.enc'
+        crypto_transform('encrypt', temporary, encrypted, key)
+        verified = stage / 'verify.tar.gz'
+        crypto_transform('decrypt', encrypted, verified, key)
+        if sha256(verified) != sha256(temporary):
+            raise RuntimeError('加密备份回读校验失败')
+        temporary = encrypted
+        name += '.enc'
+        record.update(archive=name, bytes=temporary.stat().st_size, sha256=sha256(temporary), encryption='AES-256-GCM', format='OCBK1')
         os.chmod(str(temporary), 0o600)
         with temporary.open('r+b') as stream:
             os.fsync(stream.fileno())
@@ -369,7 +442,7 @@ def run(source, destination, scheduled=False):
         return state
     except Exception as error:
         state.update({'state': 'failed', 'finishedAt': now().isoformat(), 'pid': None,
-                      'lastError': str(error)[:500]})
+                      'lastError': '备份失败，请检查密钥、运行环境、磁盘空间和文件权限；旧备份已保留'})
         atomic_json(state_file, state)
         raise
     finally:
@@ -389,12 +462,13 @@ if __name__ == '__main__':
     args = parser.parse_args()
     os.umask(0o077)
     try:
-        priority = os.getpriority(os.PRIO_PROCESS, 0)
-        if priority < 10:
-            os.nice(10 - priority)
+        if hasattr(os, 'getpriority'):
+            priority = os.getpriority(os.PRIO_PROCESS, 0)
+            if priority < 10:
+                os.nice(10 - priority)
         result = run(args.source, args.destination, args.scheduled)
         print(json.dumps({'state': result.get('state'), 'skipped': result.get('skipped'),
                           'lastSuccess': result.get('lastSuccess')}, ensure_ascii=False))
     except Exception as error:
-        print('Backup failed: ' + str(error)[:500], file=__import__('sys').stderr)
+        print('Backup failed: check key, runtime, storage and permissions; previous backups retained.', file=__import__('sys').stderr)
         raise SystemExit(1)

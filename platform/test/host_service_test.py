@@ -19,6 +19,11 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.request(age=200)['status'],409);calls=[];self.s.dispatch=lambda *_:calls.append(1) or {'ok':True}
         self.request(id='b'*32);self.assertEqual(self.request(id='b'*32)['status'],409);self.assertEqual(calls,[1])
     def test_arbitrary_host_commands_are_rejected(self):self.assertIn('error',self.request(action='exec'))
+    def test_run_intent_is_signed_and_delegates_only_to_fixed_supervisor_action(self):
+        calls=[];self.s.supervisor.intent=lambda body:calls.append(body) or {'ok':True,'phase':'stopped'}
+        body={'id':'fixture','action':'stop','reason':'manual'}
+        self.assertEqual(self.request(action='instance-intent',body=body)['result']['phase'],'stopped')
+        self.assertEqual(calls,[body])
     def test_manager_ownership_mismatch_is_not_repaired_or_started(self):
         self.s.host.inspect=lambda _: {'Config':{'Labels':{'openclaw.manager':'true','openclaw.deployment':'another-project'}}}
         with self.assertRaises(m.RecoveryError):self.s.host.manager_info()

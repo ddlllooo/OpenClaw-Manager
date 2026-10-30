@@ -6,6 +6,7 @@ const { execFile } = require('child_process');
 const store = require('./instances');
 module.exports.validate = async function validate(instance, content) {
   const parsed = JSON.parse(content);
+  require('./container-policy').assertAgentConfig(parsed);
   if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error('配置必须为对象');
   if (content.includes('__OPENCLAW_REDACTED__')) throw new Error('配置含脱敏占位符，拒绝保存');
   // CLI validates a separate candidate, so an invalid edit never reaches the live file.
@@ -14,6 +15,7 @@ module.exports.validate = async function validate(instance, content) {
   store.atomicWrite(file, content);
   try {
     if (!instance.containerId) throw new Error('请先启动实例以执行配置校验');
+    await require('./docker').inspectContainer(instance.containerId);
     await new Promise((resolve, reject) => {
       execFile('docker', ['exec', '-e', `OPENCLAW_CONFIG_PATH=/home/node/.openclaw/${name}`, instance.containerName,
         'openclaw', 'config', 'validate', '--json'], { timeout: 30000, maxBuffer: 1024 * 1024 },

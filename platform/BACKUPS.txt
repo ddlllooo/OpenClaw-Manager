@@ -27,7 +27,11 @@ com.openclaw.manager.backup 运行，不依赖 Codex 聊天保持打开。用户
 且带成功清单的归档，不触碰 pre-fix、pre-auto-backup 等人工/部署前备份。
 
 目录：/Users/livzon/openclaw-backups/daily（目录 0700，归档/清单 0600）
-每次成功产生 <日期时间>-<标识>.tar.gz 和 .tar.gz.json。
+每次成功产生 <日期时间>-<标识>.tar.gz.enc 和 .tar.gz.enc.json（AES-256-GCM）。
+解密密钥默认位于实例数据目录父目录 backup-keys/key，必须单独安全备份。
+恢复前使用 node scripts/backup_crypto.cjs decrypt 输入.tar.gz.enc 输出.tar.gz 密钥文件路径 解密并验证。
+需要 Node.js；宿主服务 PATH 未包含 Node 时设置 OPENCLAW_BACKUP_NODE。
+旧明文归档不会自动加密；详细格式、密钥路径设置与恢复步骤见 README.md 保密处理说明。
 归档内有 instances/ 和 manifest.json；外部清单包含归档 SHA-256、大小、文件/数据库数。
 status.json 为持久状态，schedule.json 记录计划。backup-job.log/backup-job-error.log
 保存系统任务输出。备份含敏感凭据，应保留该目录权限，不向未授权人员分享。

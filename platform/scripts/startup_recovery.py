@@ -214,6 +214,23 @@ class Supervisor:
         self.host=host;self.home=host.home;self.home.mkdir(parents=True,exist_ok=True,mode=0o700)
         self.settings_file=self.home/'startup-settings.json';self.state_file=self.home/'startup-status.json'
 
+    def recovery(self):
+        if not hasattr(self,'_apfs_recovery'):
+            from apfs_recovery import Recovery
+            self._apfs_recovery=Recovery(self)
+        return self._apfs_recovery
+
+    def intent(self,body):
+        with self.lock():return self.recovery().intent(body)
+
+    def effective(self,settings,id):
+        try:
+            recovery=self.recovery()
+            if recovery.storage(id).get('hard',{}).get('backend')!='apfs-volume':return self.storage_policy(settings,id)=='unless-stopped'
+            e=recovery.load()['entries'].get(id,{})
+            return bool(recovery.enabled(settings,id) and e.get('desired')=='running' and e.get('phase') in ['running','pending','restoring'] and not recovery.inhibited(id) and not recovery.protected(id))
+        except Exception:return False
+
     @contextlib.contextmanager
     def lock(self):
         import fcntl
@@ -242,7 +259,10 @@ class Supervisor:
         if not self.host.data.exists():return rows
         for folder in sorted(self.host.data.iterdir()):
             if not ID_RE.fullmatch(folder.name) or folder.is_symlink() or not folder.is_dir():continue
-            file=folder/'instance.json'
+            storage=json_file(self.host.data.parent/'storage'/(folder.name+'.json'),{})
+            mount=storage.get('hard',{}).get('mountpoint') if storage.get('hard',{}).get('backend')=='apfs-volume' else None
+            if mount and not re.fullmatch('/Volumes/oc-'+re.escape(folder.name)+r'-[a-f0-9]{8}',mount):raise RecoveryError('APFS 挂载路径不合法')
+            file=(Path(mount) if mount else folder)/'instance.json'
             if not file.exists():continue
             row=json_file(file,{})
             if row.get('id')!=folder.name:raise RecoveryError('实例记录与目录不一致')
@@ -260,13 +280,31 @@ class Supervisor:
             raise RecoveryError('容器归属校验失败，未修改容器')
         return container
 
+    def storage_policy(self, settings, id):
+        folder = self.host.data.parent / 'storage'
+        try:
+            if folder.is_symlink(): return 'no'
+            ledger=self.home/'apfs-recovery.json'
+            if ledger.is_symlink():return 'no'
+            if ledger.exists() and id in json_file(ledger,{}).get('entries',{}):return 'no'
+            if sys.platform=='darwin' and not self.host.test_mode:
+                from apfs_quota import Backend
+                if id in Backend(self.host.data).entries():return 'no'
+            value = json_file(folder / (id + '.json'), {})
+            if value.get('migration') or value.get('hard',{}).get('backend')=='apfs-volume': return 'no'
+            if not isinstance(value, dict) or value.get('blocked') or value.get('recovery'): return 'no'
+            if value.get('drain') or (value.get('policy',{}).get('mode')=='hard' and value.get('hard',{}).get('phase')!='verified'): return 'no'
+        except Exception:
+            return 'no'
+        return policy(settings, id)
+
     def reconcile(self, settings, rollback=None):
         result=[]
         for row in self.records():
             container=self.owned(row)
             if container is None:continue
             current=container['HostConfig']['RestartPolicy']['Name']
-            wanted=policy(settings,row['id'])
+            wanted=self.storage_policy(settings,row['id'])
             if current!=wanted:
                 if rollback is not None:
                     count=container['HostConfig']['RestartPolicy'].get('MaximumRetryCount',0)
@@ -279,7 +317,7 @@ class Supervisor:
         with self.lock():
             previous=self.settings();settings=patch_settings(previous,body,{r['id'] for r in self.records()})
             online=self.host.available()
-            if not online and any(r.get('containerId') and policy(previous,r['id'])!=policy(settings,r['id']) for r in self.records()):
+            if not online and any(r.get('containerId') and self.storage_policy(previous,r['id'])!=self.storage_policy(settings,r['id']) for r in self.records()):
                 raise RecoveryError('Docker 未就绪，无法安全同步实例恢复策略；请等待 Docker 可用后修改实例自启。Manager 与 Docker 开关可单独保存。',409)
             changed=[];host_applied=False
             try:
@@ -304,8 +342,10 @@ class Supervisor:
 
     def view(self):
         settings=self.settings();state=json_file(self.state_file,{})
-        return {'settings':settings,'revision':revision(settings),'status':state,
-                'instances':[{'id':r['id'],'name':r.get('name',r['id']),'enabled':settings['instanceOverrides'].get(r['id'],True),'effective':policy(settings,r['id'])=='unless-stopped'} for r in self.records()],
+        try:recovery=self.recovery().public()
+        except Exception as e:recovery={'enabled':False,'error':str(e),'instances':[]}
+        return {'settings':settings,'revision':revision(settings),'status':state,'apfsRecovery':recovery,
+                'instances':[{'id':r['id'],'name':r.get('name',r['id']),'enabled':settings['instanceOverrides'].get(r['id'],True),'effective':self.effective(settings,r['id'])} for r in self.records()],
                 'loginRequired':True,'testMode':self.host.test_mode,
                 'supervisorInstalled':(self.host.agent_dir/(self.host.worker_label+'.plist')).exists()}
 
@@ -340,24 +380,29 @@ class Supervisor:
                             except RecoveryError as e:state['errors'].append(str(e))
                 else:
                     state['phase']='ready'
-                    # Policy changes never send `start` to a stopped container.
+                    # APFS recovery alone may start a previously running primary
+                    # after a verified host boot change. Legacy policies retain
+                    # Docker's original manual-stop semantics.
+                    try:state['apfsRecovery']=self.recovery().run(settings)
+                    except Exception as e:state['errors'].append('APFS 恢复保持停止：'+str(e))
                     records=self.records()
                     for row in records:
                         item={'id':row['id'],'name':row.get('name',row['id']),
                               'enabled':settings['instanceOverrides'].get(row['id'],True),
-                              'effective':policy(settings,row['id'])=='unless-stopped'}
+                              'effective':self.effective(settings,row['id'])}
                         try:
                             container=self.owned(row)
                             if container is None:
                                 item.update({'state':'missing','detail':'容器不存在或尚未创建，请手动启动；未自动重建'})
                             else:
-                                current=container['HostConfig']['RestartPolicy']['Name'];wanted=policy(settings,row['id'])
+                                current=container['HostConfig']['RestartPolicy']['Name'];wanted=self.storage_policy(settings,row['id'])
                                 if current!=wanted:self.host.set_policy(container['Id'],wanted)
                                 item.update({'state':container['State']['Status'],'restartPolicy':wanted})
                                 if not container['State'].get('Running'):
                                     item['detail']='保持停止状态，不强制启动'
                                 else:
-                                    folder=self.host.data/row['id']
+                                    storage=json_file(self.host.data.parent/'storage'/(row['id']+'.json'),{})
+                                    folder=Path(storage.get('hard',{}).get('mountpoint',str(self.host.data/row['id'])))
                                     try:
                                         if not (folder/'workspace').is_dir():raise ValueError('工作区目录缺失')
                                         if not isinstance(json_file(folder/'openclaw/openclaw.json',None),dict):raise ValueError('配置文件缺失')

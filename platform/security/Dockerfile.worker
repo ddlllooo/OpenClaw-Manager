@@ -1,0 +1,8 @@
+FROM node:24.22.1-alpine@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53 AS certificates
+FROM node:24-bookworm-slim@sha256:8579e5fce559544b50072d05cc5d3b84b6a14d0989ae56c331d9e983a36a21f1
+COPY --from=certificates /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources && apt-get -o Acquire::Retries=3 update && apt-get -o Acquire::Retries=3 install -y --no-install-recommends openssh-server python3 iptables curl tar && rm -rf /var/lib/apt/lists/* && mkdir -p /run/sshd /workspaces && chown node:node /workspaces && passwd -d node
+COPY security/network-guard.cjs security/launch.cjs /opt/openclaw-security/
+RUN useradd -u 65532 -m -s /bin/bash sandbox && passwd -d sandbox && chown sandbox:sandbox /workspaces && printf '%s\n' 'Port 2222' 'ListenAddress 0.0.0.0' 'HostKey /keys/server' 'AuthorizedKeysFile /keys/client.pub' 'PermitRootLogin no' 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'UsePAM no' 'AllowUsers sandbox' 'AllowTcpForwarding no' 'AllowAgentForwarding no' 'X11Forwarding no' 'PermitTunnel no' 'PidFile /tmp/sshd.pid' 'StrictModes no' > /etc/ssh/sshd_config
+ENTRYPOINT ["node", "/opt/openclaw-security/launch.cjs"]
+CMD ["/usr/sbin/sshd", "-D", "-e"]

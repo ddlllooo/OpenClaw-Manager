@@ -105,7 +105,9 @@ function bindingPatch(config, body) {
   config.bindings.unshift({ agentId: id, match });
 }
 function npmSpec(value) {
-  if (typeof value !== 'string' || !/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*@\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(value) || value.length > 180) fail('请填写固定版本的 npm 包，例如 @openclaw/feishu@2026.9.3');
+  if (typeof value !== 'string' || !/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*@(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*)?$/.test(value) || value.length > 180) fail('请填写固定版本的 npm 包，例如 @openclaw/feishu@2026.9.3');
+  const prerelease = value.slice(value.lastIndexOf('@') + 1).split('-').slice(1).join('-');
+  if (prerelease.split('.').some(s => /^0[0-9]+$/.test(s))) fail('npm 预发布版本必须符合 SemVer');
   return value;
 }
 function removeAgent(config, id) {

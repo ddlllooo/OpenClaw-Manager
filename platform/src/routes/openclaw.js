@@ -183,9 +183,9 @@ router.get('/:id/model', requireReadable, async (req, res, next) => {
 const modelConfig = require('../model-config');
 const metadata = require('../model-metadata');
 const modelCatalog = new Map();
-async function detectModel(instance, body, config) {
+async function detectModel(instance, body, config, existingProvider) {
   const stored = modelConfig.find(config, body.model);
-  const creds = modelConfig.credentials(config, body, stored?.provider);
+  const creds = modelConfig.credentials(config, body, stored?.provider || existingProvider);
   return metadata.detect({ ...creds, model: body.model, catalog: async () => {
     const cached = modelCatalog.get(instance.id);
     if (cached && cached.expires > Date.now()) return cached.rows;
@@ -253,7 +253,7 @@ router.put('/:id/model/:modelId', requireRunning, express.json(), async (req, re
     if (!stored) return res.status(404).json({ error: '模型不存在' });
     const needsDetection = ['input', 'contextWindow'].some(k => body[k] === 'auto');
     const detected = needsDetection ? await detectModel(req.instance,
-      { baseUrl: stored.provider.baseUrl, ...body, apiKey: body.apiKey || stored.provider.apiKey, model: body.model || oldId }, config) : {};
+      { baseUrl: stored.provider.baseUrl, ...body, model: body.model || oldId }, config, stored.provider) : {};
     const result = modelConfig.update(config, oldId, body, detected);
     await commitModelConfig(req.instance, before, config);
     res.json({ ok: true, hint: `模型 ${result.entry.id} 已保存，未修改的字段已保留，网关热加载生效。`,
@@ -300,6 +300,11 @@ router.post('/:id/model/test', requireRunning, express.json(), async (req, res, 
 
 // ── Feishu channel (channels.feishu + plugins.entries.feishu) ────────────────
 async function readFeishuConfig(instance) {
+  if(instance.channelIsolation){
+    const accounts=Object.values(instance.channelIsolation.accounts);let running=accounts.length>0;
+    for(const target of accounts){try{const response=await fetch('http://'+target.ip+':18791/health',{headers:{Authorization:'Bearer '+target.token},redirect:'error',signal:AbortSignal.timeout(1500)});const health=await response.json();running=running&&response.ok&&health.activated===true;}catch{running=false;}}
+    return {isolated:true,configured:accounts.length>0,pluginEnabled:false,appId:'',hasAppSecret:false,appSecretMasked:'',running,lastError:running?null:'独立收发未就绪；凭据由代理管理，不能回填网关'};
+  }
   const raw = JSON.parse(store.readOpenclawConfig(instance.id) || '{}');
   const cfg = raw.channels?.feishu || null;
   const pluginEnabled = Boolean(raw.plugins?.entries?.feishu?.enabled);
@@ -339,6 +344,7 @@ router.get('/:id/feishu', requireReadable, async (req, res, next) => {
 
 router.put('/:id/feishu', requireRunning, express.json(), async (req, res, next) => {
   try {
+    if(req.instance.channelIsolation)return res.status(409).json({error:'飞书已隔离，请使用访问设置或 isolate-feishu.cjs；不能恢复网关内凭据和原生插件'});
     const { appId, appSecret, enabled } = req.body || {};
     const aid = String(appId || '').trim();
     if (!aid) return res.status(400).json({ error: '请填写 App ID' });
@@ -351,18 +357,17 @@ router.put('/:id/feishu', requireRunning, express.json(), async (req, res, next)
       if (!secret) return res.status(400).json({ error: '请填写 App Secret' });
     }
     if (isRedactedSentinel(secret)) throw new Error('不能将脱敏占位符保存为 Secret');
-    // The plugin ships inside the image (pre-installed at npm/projects/…), so
-    // "already exists" is the normal path; a fresh install only errors loudly.
+    const previous=JSON.parse(store.readOpenclawConfig(req.instance.id)||'{}');
+    if(enabled!==false&&!(previous.channels?.feishu?.appId&&previous.plugins?.entries?.feishu?.enabled)&&!(process.env.MANAGER_NATIVE_PLUGIN_ALLOWLIST||'').split(',').map(v=>v.trim()).includes('@openclaw/feishu'))return res.status(403).json({error:'新增原生飞书需要管理员明确信任；建议使用 isolate-feishu.cjs 独立适配'});
+    const inventory=extractJson((await execInInstance(req.instance,['plugins','list','--json'])).stdout);
+    if(!inventory.plugins?.some(p=>p.id==='feishu'))throw Error('请先使用插件审查入口安装固定版本，或使用独立飞书适配；凭据表单不会自动安装并接受权限');
+    await require('../gateway-rpc').rpc(req.instance,'plugins.setEnabled',{pluginId:'feishu',enabled:enabled!==false});
     const existing = JSON.parse(store.readOpenclawConfig(req.instance.id) || '{}');
-    try {
-      if (!existing.plugins?.entries?.feishu?.enabled) await execInInstance(req.instance, ['plugins', 'install', '@openclaw/feishu', '--accept-capabilities', '--acknowledge-install-policy-warning'], { timeout: 300_000 });
-    } catch (err) {
-      if (!/already exists/i.test(String(err.message))) throw err;
-    }
-    await execInInstance(req.instance, ['config', 'set', 'plugins.entries.feishu', '{"enabled":true}', '--strict-json'], { timeout: 30_000 });
     const enable = enabled === false ? false : true;
-    await execInInstance(req.instance, ['config', 'set', 'channels.feishu', JSON.stringify({ ...(existing.channels?.feishu || {}), enabled: enable, appId: aid, appSecret: secret }), '--strict-json'], { timeout: 30_000 });
+    existing.channels||={};existing.channels.feishu={...(existing.channels.feishu||{}),enabled:enable,appId:aid,appSecret:secret};
+    const content=JSON.stringify(existing,null,2)+'\n';await require('../validation').validate(req.instance,content);store.writeOpenclawConfig(req.instance.id,content);
     // Channel config only applies on gateway restart.
+    await require('../storage').assertCanStart(req.instance.id);
     await dockermod.restartContainer(req.instance.containerId);
     if (!await require('../lifecycle').ready(req.instance.port)) throw new Error('飞书保存后网关未就绪，请检查配置');
     monitor.track(req.instance);
@@ -376,6 +381,7 @@ router.put('/:id/feishu', requireRunning, express.json(), async (req, res, next)
 // Connection probe without saving (uses stored credentials).
 router.post('/:id/feishu/test', requireRunning, async (req, res, next) => {
   try {
+    if(req.instance.channelIsolation){const status=await readFeishuConfig(req.instance);return res.json({ok:status.running,running:status.running,error:status.lastError,isolated:true});}
     const st = extractJson((await execInInstance(req.instance, ['channels', 'status', '--channel', 'feishu', '--probe', '--json', '--timeout', '20000'], { timeout: 45_000 })).stdout);
     const acc = st.channelAccounts && st.channelAccounts.feishu && st.channelAccounts.feishu[0];
     if (!acc) return res.status(409).json({ ok: false, error: '飞书频道尚未配置' });

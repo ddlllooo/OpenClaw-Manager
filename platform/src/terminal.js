@@ -185,10 +185,17 @@ function parseUpgrades(server) {
     if (!m) { socket.destroy(); return; }
     try {
       const inst = store.loadInstance(m[1]);
+      try{await require('./storage').assertAdmission(inst.id);}catch{socket.end('HTTP/1.1 507 Insufficient Storage\r\nConnection: close\r\n\r\n');return;}
       if (!inst.containerId || !(await dockermod.inspectContainer(inst.containerId)).State.Running) {
         socket.end('HTTP/1.1 409 Conflict\r\n\r\n'); return;
       }
-      wss.handleUpgrade(req, socket, head, (ws) => handleTerminal(m[1], ws));
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        const security = require('./security');
+        if (!security.authenticated(req)) { ws.terminate(); return; }
+        handleTerminal(m[1], ws);
+        const unbind = security.bindSession(req, () => ws.terminate());
+        ws.once('close', unbind);
+      });
     } catch { socket.end('HTTP/1.1 404 Not Found\r\n\r\n'); }
   });
 }

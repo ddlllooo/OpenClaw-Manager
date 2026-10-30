@@ -19,6 +19,14 @@ function instancesRoot() {
 
 function instanceDir(id) {
   if (!/^[a-z0-9_-]{1,80}$/i.test(String(id))) throw new Error('非法实例 ID');
+  const file=path.join(path.dirname(instancesRoot()),'storage',id+'.json');
+  if(fs.existsSync(file)){
+    const s=JSON.parse(fs.readFileSync(file,'utf8'));
+    if(s.hard?.backend==='apfs-volume'&&s.hard.mountpoint){
+      if(!new RegExp('^/Volumes/oc-'+id+'-[a-f0-9]{8}$').test(s.hard.mountpoint))throw new Error('APFS 实例卷路径不合法');
+      return s.hard.mountpoint;
+    }
+  }
   return path.join(instancesRoot(), id);
 }
 function atomicWrite(file, content, backup = false) {
@@ -61,7 +69,7 @@ function listInstanceIds() {
   const ids = fs.readdirSync(root).filter((name) => {
     if (name.endsWith('.kept')) return false; // archived data, not a live instance
     try {
-      return fs.statSync(path.join(root, name)).isDirectory() && fs.existsSync(instanceFile(name));
+      return fs.statSync(instanceDir(name)).isDirectory() && fs.existsSync(instanceFile(name));
     } catch {
       return false;
     }
@@ -230,7 +238,8 @@ function initInstanceFiles(instance) {
       },
     },
   };
-  fs.writeFileSync(path.join(cfg, 'openclaw.json'), JSON.stringify(openclawJson, null, 2) + '\n');
+  require('./container-policy').agentConfig(openclawJson);
+  atomicWrite(path.join(cfg, 'openclaw.json'), JSON.stringify(openclawJson, null, 2) + '\n');
 
   const envLines = [
     `# instance ${instance.id} - managed by openclaw-docker-manager`,
@@ -240,7 +249,7 @@ function initInstanceFiles(instance) {
     `OPENCLAW_TZ=${process.env.OPENCLAW_TZ || 'Asia/Shanghai'}`,
     '',
   ].join('\n');
-  fs.writeFileSync(path.join(cfg, '.env'), envLines);
+  atomicWrite(path.join(cfg, '.env'), envLines);
 
   // The official image runs as node (uid 1000); make our bind mounts writable.
   chownToNode(cfg);
@@ -270,6 +279,11 @@ function writeOpenclawConfig(id, content) {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('配置必须是 JSON 对象');
   if (content.includes('__OPENCLAW_REDACTED__')) throw new Error('不能保存脱敏占位符');
   fs.mkdirSync(configDir(id), { recursive: true });
+  require('./container-policy').assertAgentConfig(parsed);
+  const record = fs.existsSync(instanceFile(id)) ? loadInstance(id) : null;
+  if(record?.security?.profile==='ssh-sandbox-v1')require('../security/profile.cjs').assert(parsed,record.security.targets);
+  require('../security/plugin-provision.cjs').assertConfig(parsed,record?.pluginIsolation);
+  require('../security/feishu-policy.cjs').assertConfig(parsed,record?.channelIsolation);
   atomicWrite(path.join(configDir(id), 'openclaw.json'), content, true);
 }
 
@@ -279,6 +293,11 @@ function mergeOpenclawConfig(id, patch) {
   const file = path.join(configDir(id), 'openclaw.json');
   const current = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
   const merged = { ...current, ...patch };
+  require('./container-policy').assertAgentConfig(merged);
+  const record = loadInstance(id);
+  if(record.security?.profile==='ssh-sandbox-v1')require('../security/profile.cjs').assert(merged,record.security.targets);
+  require('../security/plugin-provision.cjs').assertConfig(merged,record.pluginIsolation);
+  require('../security/feishu-policy.cjs').assertConfig(merged,record.channelIsolation);
   fs.mkdirSync(configDir(id), { recursive: true });
   atomicWrite(file, JSON.stringify(merged, null, 2) + '\n', true);
 }
@@ -290,6 +309,8 @@ function readEnvFile(id) {
 }
 
 function writeEnvFile(id, content) {
+  const record=fs.existsSync(instanceFile(id))?loadInstance(id):null;
+  if(record?.channelIsolation&&Object.keys(parseEnv(content)).some(key=>/^(FEISHU|LARK)_/i.test(key)||(record.channelIsolation.secretEnvNames||[]).includes(key)))throw Error('独立飞书凭据不能写回网关环境');
   fs.mkdirSync(configDir(id), { recursive: true });
   atomicWrite(path.join(configDir(id), '.env'), content, true);
 }

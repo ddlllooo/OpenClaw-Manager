@@ -8,6 +8,13 @@ const { app, BrowserWindow, shell, dialog, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
+if (app.isPackaged && !process.env.OPENCLAW_ENV_FILE) {
+  process.env.OPENCLAW_ENV_FILE = path.join(app.getPath('userData'), '.env');
+  // A packaged application may use its generated persistent token instead.
+  if (!fs.existsSync(process.env.OPENCLAW_ENV_FILE)) delete process.env.OPENCLAW_ENV_FILE;
+}
+require('../src/env').load();
+
 const APP_NAME = 'OpenClaw Manager';
 const PORT = Number(process.env.MANAGER_PORT || 18080);
 const APP_URL = `http://127.0.0.1:${PORT}/`;
@@ -94,7 +101,7 @@ async function createWindow() {
 
   try {
     await serverReady;
-    await mainWindow.loadURL(APP_URL);
+    await mainWindow.loadURL(APP_URL + '#manager_token=' + encodeURIComponent(require('../src/security').managementToken()));
   } catch (err) {
     dialog.showErrorBox('启动失败', `管理服务启动失败：${err.message}`);
     app.quit();
@@ -148,6 +155,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  require('../src/docker-control-launcher').stop();
   // Stop timers and close the HTTP server so the process exits promptly.
   try {
     if (serverModule && serverModule.app) {

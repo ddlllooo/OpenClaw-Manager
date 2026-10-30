@@ -65,11 +65,31 @@ let viewEpoch = 0;
 let pageActivity = null;
 let liveSource = null;
 const pendingActions = new Set();
+function requestManagementToken() {
+  return new Promise(resolve => {
+    const dialog = document.createElement('dialog');
+    dialog.innerHTML = '<form><h3>管理端认证</h3><p>请输入管理服务的凭证（manager-auth/token 文件，或 MANAGER_AUTH_TOKEN）。SSH 设备请使用远程服务的凭证。</p><input type="password" autocomplete="off" aria-label="管理凭证" required><button type="submit">登录</button><button type="button">取消</button></form>';
+    const finish = value => { dialog.remove(); resolve(value); };
+    dialog.querySelector('form').onsubmit = event => { event.preventDefault(); finish(dialog.querySelector('input').value.trim()); };
+    dialog.querySelector('button[type="button"]').onclick = () => finish(null);
+    dialog.oncancel = event => { event.preventDefault(); finish(null); };
+    document.body.append(dialog); dialog.showModal(); dialog.querySelector('input').focus();
+  });
+}
+let bootstrapToken = new URLSearchParams(location.hash.slice(1)).get('manager_token');
+if (bootstrapToken) history.replaceState(null, '', location.pathname + location.search);
 async function ensureSession() {
-  if (!sessionPromise) sessionPromise = fetch('/api/session', { credentials: 'same-origin' }).then(async response => {
-    if (!response.ok) throw new Error('无法建立管理会话');
-    csrfToken = (await response.json()).csrf;
-  }).catch(error => { sessionPromise = null; throw error; });
+  if (!sessionPromise) sessionPromise = (async () => {
+    let token = bootstrapToken; bootstrapToken = null;
+    for (;;) {
+      const response = await fetch('/api/session', { credentials: 'same-origin', headers: token ? { Authorization: 'Bearer ' + token } : {} });
+      token = null;
+      if (response.ok) { csrfToken = (await response.json()).csrf; return; }
+      if (response.status !== 401) throw new Error('无法建立管理会话');
+      token = await requestManagementToken();
+      if (!token) throw new Error('管理认证已取消');
+    }
+  })().catch(error => { sessionPromise = null; throw error; });
   return sessionPromise;
 }
 async function api(path, opts = {}) {
@@ -1191,6 +1211,8 @@ async function loadFeishuConfig() {
   if (!box) return;
   try {
     const f = await api(`/api/instances/${state.selectedId}/feishu`);
+    for(const element of [$('#fAppId'),$('#fAppSecret'),document.querySelector('[data-act="saveFeishu"]')])if(element)element.disabled=Boolean(f.isolated);
+    if(f.isolated)$('#feishuHint').textContent='独立飞书：凭据不在网关。访问规则在“飞书访问设置”管理，凭据和传输使用专用迁移工具。';
     const status = !f.configured
       ? '未配置'
       : f.running && !f.lastError
@@ -1673,6 +1695,7 @@ async function saveConfig(kind, thenRestart) {
       method: 'PUT',
       body: JSON.stringify({ content: ta.value, revision: ta.dataset.revision }),
     });
+    if (typeof result.content === 'string') ta.value = result.content;
     ta.dataset.revision = result.revision; ta.dataset.savedValue = ta.value; ta.dataset.dirty = '';
     const hint = kind === 'json' ? $('#cfgHint') : $('#envHint');
     hint.textContent = '已保存 ✓';

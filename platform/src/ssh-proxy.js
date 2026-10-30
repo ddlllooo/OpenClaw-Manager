@@ -30,10 +30,11 @@ function headersFor(req, remotePort, cookieName) {
   } else {
     // Manager session cookies must never reach an instance Gateway.
     delete headers.cookie;
+    delete headers.authorization;
   }
   return headers;
 }
-function requestJSON(client, port, route, headers) {
+function requestJSON(client, port, route, headers, { allowAuthenticationRequired = false } = {}) {
   return new Promise((resolve, reject) => {
     const pool = agent(client, port);
     const req = http.get({host:'127.0.0.1',port,path:route,headers,agent:pool}, res => {
@@ -42,6 +43,9 @@ function requestJSON(client, port, route, headers) {
       res.on('error', reject);
       res.on('end', () => {
         pool.destroy();
+        if (res.statusCode === 401 && allowAuthenticationRequired) {
+          try { if (JSON.parse(raw).authenticationRequired === true) return resolve({ authenticationRequired: true }); } catch {}
+        }
         if (res.statusCode !== 200) return reject(Object.assign(new Error('远程会话已过期或实例不存在'),{statusCode:res.statusCode}));
         try { resolve(JSON.parse(raw)); } catch { reject(new Error('远程管理服务响应格式错误')); }
       });
@@ -99,8 +103,10 @@ function proxyServer(client, remotePort, {cookieName, context, gateway} = {}) {
         response.on('data', b => {body += b; if(body.length > 32*1024*1024) upstream.destroy(new Error('远程响应过大'));});
         response.on('end', () => {
           if(workspaceHTML){
-            if(!body.includes('src="/devices.js'))body=body.replace('</body>','<script src="/devices.js?v=unified-devices-20261016"></script></body>');
-            if(!body.includes('href="/devices.css'))body=body.replace('</head>','<link rel="stylesheet" href="/devices.css?v=unified-devices-20261016"></head>');
+            if(!body.includes('data-manager-ui="react"')){
+              if(!body.includes('src="/devices.js'))body=body.replace('</body>','<script src="/devices.js?v=unified-devices-20261016"></script></body>');
+              if(!body.includes('href="/devices.css'))body=body.replace('</head>','<link rel="stylesheet" href="/devices.css?v=unified-devices-20261016"></head>');
+            }
           }else try {const data=JSON.parse(body);rewriteInstances(data);body=JSON.stringify(data);} catch { /* retain remote error */ }
           delete headers['content-length'];delete headers['transfer-encoding'];
           if(workspaceHTML){delete headers.etag;delete headers['last-modified'];headers['cache-control']='no-store';}

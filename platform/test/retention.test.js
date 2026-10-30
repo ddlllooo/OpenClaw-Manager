@@ -306,7 +306,7 @@ test('lifecycle registers cleanup only after readiness and durable commit; clean
       stopContainer:async()=>events.push('stop'),createInstanceContainer:async()=> 'new',startContainer:async()=>{if(mode==='start-error')throw Error('start failed');},removeContainer:async()=>events.push('remove')};
     const store={parseEnv:()=>({}),readEnvFile:()=>'',configDir:()=>'/tmp',workspaceDir:()=>'/tmp',authDir:()=>'/tmp',saveInstance:r=>events.push('save:'+r.containerId+':'+(r.rollbackContainerId||''))};
     const retention={instanceSucceeded:r=>{events.push('cleanup:'+r.containerId+':'+r.rollbackContainerId);if(mode==='cleanup-error')throw Error('disk full');}};
-    vm.runInNewContext(code,{module,require:n=>n==='./docker'?dm:n==='./instances'?store:n==='./retention'?retention:n==='./gateway-address'?{base:async()=> 'http://fixture'}:n==='http'?http:require(n),console:{warn(){}},setTimeout});
+    vm.runInNewContext(code,{module,require:n=>n==='./run-intent'?{track:(_i,_r,fn)=>fn()}:n==='./storage'?{assertCanStart:async()=>{}}:n==='./docker'?dm:n==='./instances'?store:n==='./retention'?retention:n==='./gateway-address'?{base:async()=> 'http://fixture'}:n==='http'?http:require(n),console:{warn(){}},setTimeout});
     if(mode==='start-error'){await assert.rejects(module.exports.replace(inst));assert.ok(!events.some(e=>e.startsWith('cleanup:')));}
     else {
       await module.exports.replace(inst,mode!=='no-start');

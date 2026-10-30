@@ -4,6 +4,7 @@ const path = require('path');
 const store = require('./instances');
 function home() { return process.env.OPENCLAW_STARTUP_HOME || path.dirname(store.instancesRoot()); }
 function restartPolicy(id, fallback = {Name:'unless-stopped'}) {
+  if (require('./storage').isBlocked(id)||require('./storage').requiresMountGuard(id)) return {Name:'no'};
   const file=path.join(home(),'startup-settings.json');
   if (!fs.existsSync(file)) return fallback;
   const settings=JSON.parse(fs.readFileSync(file,'utf8'));

@@ -1,4 +1,5 @@
 'use strict';
+process.env.MANAGER_AUTH_TOKEN = 'test-management-credential-0123456789abcdef';
 const test=require('node:test'),assert=require('node:assert/strict');
 const http=require('http'),net=require('net'),crypto=require('crypto');
 const express=require('express'),{Server}=require('ssh2'),{WebSocketServer,WebSocket}=require('ws');
@@ -17,6 +18,7 @@ const waitFor=async(predicate,timeout=10000)=>{
   throw new Error('等待测试状态超时');
 };
 const get=async(url,options={})=>{
+  if(new URL(url).pathname==='/api/session')options={...options,headers:{Authorization:'Bearer '+process.env.MANAGER_AUTH_TOKEN,...options.headers}};
   const response=await fetch(url,options);const text=await response.text();let body;try{body=JSON.parse(text);}catch{body=text;}
   return {status:response.status,headers:response.headers,body};
 };
@@ -33,7 +35,7 @@ test.before(async()=>{
   app.use((req,res,next)=>req.path==='/'&&['cross-site','same-site'].includes(req.headers['sec-fetch-site'])?res.sendStatus(403):next());
   app.use(security.middleware);app.use(express.json());
   app.use('/api/connections',require('../src/routes/connections'));
-  app.get('/',(req,res)=>res.type('html').send('<!doctype html><html><head><title>Legacy Manager</title></head><body>Legacy frontend</body></html>'));
+  app.get('/',(req,res)=>res.type('html').send(req.query.react==='1'?'<html data-manager-ui="react"><head><title>React Manager</title></head><body><div id="root"></div></body></html>':'<!doctype html><html><head><title>Legacy Manager</title></head><body>Legacy frontend</body></html>'));
   app.get('/api/instances',(req,res)=>res.json({instances:[{id:'fixture',port:gateway.address().port,uiUrl:`http://127.0.0.1:${gateway.address().port}/`}]}));
   app.get('/api/system',(req,res)=>res.json({ncpu:32,memTotal:128*1024**3,disk:{total:1000,available:900}}));
   app.post('/api/echo',(req,res)=>res.json(req.body));
@@ -145,8 +147,11 @@ test('automatic provisioning builds only allowed source and uses remote persiste
   assert.match(require('fs').readFileSync(require('path').join(__dirname,'../Dockerfile'),'utf8'),/COPY package\.json package-lock\.json server\.js Dockerfile \.\//);
   assert.ok(!archiveNames.some(n=>/^(data|ops|node_modules)\//.test(n)||/\.env$/.test(n)));
   assert.match(setupScripts[0],/chownSync/);
-  const run=commands.find(args=>args[1]==='run'&&args.includes('-d'));
-  assert.ok(run.includes('1000:1000'));assert.ok(run.includes('998'));
+  const run=commands.find(args=>args[1]==='run'&&args.includes('-d')&&!args.includes('scripts/docker-control.cjs'));
+  assert.ok(run.includes('1000:1000'));assert.ok(!run.includes('998'));
+  assert.ok(run.includes('OPENCLAW_CONTROL_SOCKET=/run/openclaw-docker/control.sock'));
+  assert.ok(!run.some(a=>a.endsWith(':/var/run/docker.sock')));
+  assert.ok(commands.some(args=>args.includes('scripts/docker-control.cjs')&&args.some(a=>a.endsWith(':/var/run/docker.sock'))));
   assert.ok(run.includes('OPENCLAW_DATA_DIR=/var/lib/docker/volumes/remote-only/_data/instances'));
   assert.ok(run.includes(`127.0.0.1:${remotePort}:${remotePort}`));assert.ok(!run.some(a=>a.includes('C:')));
   ssh.close(ssh.connections.get(row.id));
@@ -197,7 +202,7 @@ test('container SSH origins use the published port for authenticated HTTP and We
     row=await opened();const host=new URL(row.url).host,base=`http://127.0.0.1:${entry.address().port}/`;
     assert.match(host,/^openclaw-[a-f0-9]+\.localhost:/);assert.equal(new URL(row.url).port,previousPort);
     const routed=(route,headers)=>new Promise((resolve,reject)=>{http.get(base+route,{headers},res=>{let raw='';res.on('data',b=>raw+=b);res.on('end',()=>{let body;try{body=JSON.parse(raw);}catch{body=raw;}resolve({status:res.statusCode,body,headers:new Headers(res.headers)});});}).on('error',reject);});
-    const session=await routed('api/session',{Host:host});assert.equal(session.status,200,JSON.stringify(session.body));
+    const session=await routed('api/session',{Host:host,Authorization:'Bearer '+process.env.MANAGER_AUTH_TOKEN});assert.equal(session.status,200,JSON.stringify(session.body));
     const headers={...authHeaders(session),Host:host,Origin:'http://'+host};
     assert.equal((await routed('api/system',headers)).body.ncpu,32);
     assert.equal((await routed('api/system',{...headers,Origin:'http://malicious.invalid'})).status,403);
@@ -337,4 +342,15 @@ test('reconnect, settings and forget APIs require CSRF and removing a device pre
   assert.equal((await get(base+'/reconnect',{method:'POST',headers,body:'{}'})).status,202);await waitFor(()=>ssh.connections.get(savedId).status==='connected');
   assert.equal((await get(base+'/saved',{method:'DELETE',headers,body:'{}'})).status,200);assert.equal(savedStore.load().length,0);assert.equal(ssh.connections.has(savedId),false);
   ssh.closeAll();ssh.connections.clear();ssh.start({store:savedStore});assert.equal(ssh.connections.size,0);
+});
+
+
+test('React remote Managers use their own device switcher without injected legacy DOM scripts',async()=>{
+  const row=await opened(),page=await get(row.url+'?react=1');
+  assert.equal(page.status,200);assert.match(page.body,/data-manager-ui="react"/);
+  assert.doesNotMatch(page.body,/devices\.(?:js|css)/);
+  assert.equal(page.headers.get('cache-control'),'no-store');
+  const context=await get(row.url+'api/connections/context');
+  assert.equal(context.body.device.id,row.id);
+  ssh.close(ssh.connections.get(row.id));
 });

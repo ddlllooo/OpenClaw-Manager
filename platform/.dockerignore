@@ -7,8 +7,16 @@
 !src/**
 !public/
 !public/**
+!frontend/
+!frontend/**
+!vite.config.mjs
 !control-ui-patches/
 !control-ui-patches/**
 !scripts/
 !scripts/**
 scripts/**/__pycache__
+
+!security/
+!security/**
+security/**/node_modules
+security/**/*.private.json

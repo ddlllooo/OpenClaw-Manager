@@ -11,6 +11,7 @@ function socketPath(platform = process.platform, home = os.homedir(), exists = f
   return exists(rootless) ? rootless : '/var/run/docker.sock';
 }
 function dockerSocket() {
+  if (process.env.OPENCLAW_CONTROL_SOCKET) return process.env.OPENCLAW_CONTROL_SOCKET;
   if (process.env.DOCKER_SOCKET) return process.platform==='win32' ? process.env.DOCKER_SOCKET.replace(/\\/g,'/') : process.env.DOCKER_SOCKET;
   const host = process.env.DOCKER_HOST;
   if (host?.startsWith('unix://')) return host.slice(7);

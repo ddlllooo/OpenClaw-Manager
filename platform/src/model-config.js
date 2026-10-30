@@ -13,6 +13,13 @@ function find(config, id) {
   }
   return null;
 }
+function validateTransport(url) {
+  const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  const allowed = (process.env.MANAGER_MODEL_HTTP_ORIGINS || '').split(',').map(v => v.trim()).filter(Boolean);
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && (local || allowed.includes(url.origin)))) {
+    throw new Error('模型接口需要 HTTPS；其他 HTTP 来源需配置 MANAGER_MODEL_HTTP_ORIGINS');
+  }
+}
 function credentials(config, body, stored) {
   const source = body.copyKeyFrom ? find(config, body.copyKeyFrom)?.provider : null;
   if (body.copyKeyFrom && !source) throw new Error('凭据来源模型不存在');
@@ -22,6 +29,11 @@ function credentials(config, body, stored) {
   const baseUrl = String(body.baseUrl || source?.baseUrl || stored?.baseUrl || '').trim().replace(/\/$/, '');
   const url = new URL(baseUrl);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error('base_url 必须为有效的 http(s) 接口地址');
+  const inherited = source || stored;
+  if (!typedKey && inherited?.baseUrl && new URL(inherited.baseUrl).origin !== url.origin) {
+    throw new Error('接口来源已变化，请重新填写 api_key；禁止将已有密钥发送到新来源');
+  }
+  validateTransport(url);
   if (!apiKey) throw new Error('请填写 api_key，或复用现有模型的凭据');
   return { baseUrl, apiKey };
 }
@@ -101,4 +113,4 @@ function remove(config, id) {
   stored.provider.models.splice(stored.index, 1);
   if (!stored.provider.models.length) delete config.models.providers[stored.pid];
 }
-module.exports = { find, credentials, patchEntry, update, remove, setDefault, pidFor };
+module.exports = { validateTransport, find, credentials, patchEntry, update, remove, setDefault, pidFor };

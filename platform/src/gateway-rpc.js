@@ -3,9 +3,10 @@ const { spawn, execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { StringDecoder } = require('string_decoder');
-const HELPER = fs.readFileSync(path.join(__dirname, 'gateway-helper.cjs'), 'utf8');
+const HELPER = fs.readFileSync(path.join(__dirname, 'plugin-helper.cjs'), 'utf8') + '\n' + fs.readFileSync(path.join(__dirname, 'gateway-helper.cjs'), 'utf8');
 const PREFIX = '@@MANAGER@@';
-function rpc(instance, method, params = {}, { timeout = 45000, stream = false, onEvent } = {}) {
+async function rpc(instance, method, params = {}, { timeout = 45000, stream = false, onEvent } = {}) {
+  if(['chat.send','agent','cron.run','cron.add','manager.plugins.install'].includes(method)||(method==='cron.update'&&params.patch?.enabled!==false))await require('./storage').assertAdmission(instance.id);
   return new Promise((resolve, reject) => {
     const child = spawn('docker', ['exec', '-i', instance.containerName, 'node', '-e', HELPER], { windowsHide: true });
     let pending = '', stderr = '', result, settled = false, bytes = 0;
@@ -13,6 +14,10 @@ function rpc(instance, method, params = {}, { timeout = 45000, stream = false, o
     const timer = setTimeout(() => { child.kill(); finish(new Error('网关请求超时，请检查实例状态')); }, timeout + 5000);
     function finish(error) {
       if (settled) return; settled = true; clearTimeout(timer);
+      if(error&&/\b(?:ENOSPC|EDQUOT|SQLITE_FULL)\b|quota exceeded|no space left on device/i.test(error.message)){
+        require('./storage').reportWriteFailure(instance.id);
+        error=Object.assign(new Error('实例数据空间不足，本次任务可能未保存；已停止接单，请检查会话后清理或扩容'),{statusCode:507,retryable:false});
+      }
       error ? reject(error) : resolve(result);
     }
     child.on('error', finish);
@@ -28,7 +33,7 @@ function rpc(instance, method, params = {}, { timeout = 45000, stream = false, o
         if (!line.startsWith(PREFIX)) continue;
         try {
           const envelope = JSON.parse(line.slice(PREFIX.length));
-          if (envelope.error) { finish(new Error(envelope.error)); continue; }
+          if (envelope.error) { const error = new Error(envelope.error); error.details = envelope.details; finish(error); continue; }
           if (envelope.kind === 'result') result = envelope.data;
           onEvent?.(envelope);
         } catch (error) { finish(error); }

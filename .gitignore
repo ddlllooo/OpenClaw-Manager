@@ -4,6 +4,9 @@ dist/
 coverage/
 .nyc_output/
 platform/deployment-lock.json
+/platform/public/ui/
+/platform/test-results/
+/platform/playwright-report/
 
 # Runtime data, credentials and environment overrides
 platform/data/

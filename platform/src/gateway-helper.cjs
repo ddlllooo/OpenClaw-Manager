@@ -20,6 +20,9 @@ async function exported(prefixName, exportName) {
   let raw = '';
   for await (const chunk of process.stdin) { raw += chunk; if (raw.length > 32 * 1024 * 1024) throw new Error('请求过大'); }
   const input = JSON.parse(raw);
+  if (input.method === 'manager.plugins.install') {
+    emit('result', await installVerifiedPlugin(input, exported)); return;
+  }
   if (!input.stream) {
     const call = await exported('call', 'callGatewayCli');
     let data;
@@ -63,5 +66,5 @@ async function exported(prefixName, exportName) {
     client.start();
   });
 })().then(() => process.stdout.write('', () => process.exit(0))).catch(error => {
-  process.stdout.write(prefix + JSON.stringify({ error: String(error.message || error).slice(0, 600) }) + '\n', () => process.exit(1));
+  process.stdout.write(prefix + JSON.stringify({ error: String(error.message || error).slice(0, 600), ...(error.details && typeof error.details === 'object' ? { details: error.details } : {}) }) + '\n', () => process.exit(1));
 });

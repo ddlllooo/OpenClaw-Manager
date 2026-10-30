@@ -6,6 +6,20 @@ const docker = require('../docker');
 const gateway = require('../gateway-rpc');
 const util = require('../management');
 const { redact } = require('../instance-features');
+const pluginInstall = require('../plugin-install');
+const installer = pluginInstall.createInstaller({ rpc: (...args) => gateway.rpc(...args) });
+function pluginResult(result, config, instance) {
+  if (!result.reviewRequired) return redact(result, config, instance);
+  // Permission groups may legitimately be named env, headers, or tokens. Do
+  // not replace whole groups with redaction placeholders and then grant them.
+  // Refuse a report containing sensitive values rather than hide its content.
+  function check(node) {
+    if (typeof node === 'string' && redact(node, config, instance) !== node) util.fail('审查报告包含需脱敏的内容，无法完整展示，拒绝安装；请在受信任终端检查',403);
+    if (node && typeof node === 'object') for (const [key, value] of Object.entries(node)) { check(key); check(value); }
+  }
+  check(result);
+  return result;
+}
 const router = express.Router();
 router.use('/:id', (req, res, next) => {
   try { req.instance = store.loadInstance(req.params.id); next(); } catch { res.status(404).json({error:'实例不存在'}); }
@@ -40,12 +54,14 @@ router.get('/:id/failover',run(async(req,res)=>{
 router.put('/:id/failover',run(async(req,res)=>{
   const before=read(req,true);util.failover(before.config,req.body);res.json({ok:true,revision:await commit(req,before),hint:'策略已保存，由 OpenClaw 按备用顺序自动切换。现有会话可能保留当前模型；可新建会话验证。'});
 }));
-router.get('/:id/feishu-access',run(async(req,res)=>res.json(util.accessView(read(req).config,String(req.query.account||'')))));
+router.get('/:id/feishu-access',run(async(req,res)=>res.json(req.instance.channelIsolation?require('../channel-access').view(req.instance,String(req.query.account||'')):util.accessView(read(req).config,String(req.query.account||'')))));
 router.put('/:id/feishu-access',run(async(req,res)=>{
+  if(req.instance.channelIsolation){res.json(require('../channel-access').patch(req.instance,req.body));return;}
   const before=read(req,true);util.accessPatch(before.config,req.body);
   res.json({ok:true,revision:await commit(req,before),hint:'访问规则已保存，OpenClaw 将重新加载渠道；部分版本会短暂重启网关。单独群聊的覆盖规则仍优先生效。'});
 }));
 router.put('/:id/feishu-access/group',run(async(req,res)=>{
+  if(req.instance.channelIsolation){res.json(require('../channel-access').patch(req.instance,req.body,true));return;}
   const before=read(req,true),account=req.body.account||'';util.accessView(before.config,account);
   const group=util.text(req.body.groupId,'群 ID',200);if(group!=='*'&&!/^oc_[A-Za-z0-9_-]+$/.test(group))util.fail('请填写 oc_ 开头的群 ID，或 * 表示默认群规则');
   const patch=req.body.patch;if(!patch||Object.keys(patch).some(k=>!['enabled','requireMention'].includes(k))||Object.values(patch).some(v=>v!==null&&typeof v!=='boolean'))util.fail('群聊规则不合法');
@@ -55,11 +71,13 @@ router.put('/:id/feishu-access/group',run(async(req,res)=>{
   res.json({ok:true,revision:await commit(req,before),hint:'群聊覆盖规则已保存。'});
 }));
 router.get('/:id/feishu-access/pairing',run(async(req,res)=>{
+  if(req.instance.channelIsolation)util.fail('独立飞书使用显式用户白名单，不读取原生配对库',409);
   await running(req.instance);
   const args=['pairing','list','feishu','--json'];if(req.query.account) args.push('--account',util.text(req.query.account,'账号'));
   res.json(util.jsonOutput(await gateway.cli(req.instance,args)));
 }));
 router.post('/:id/feishu-access/pairing/approve',run(async(req,res)=>{
+  if(req.instance.channelIsolation)util.fail('请在独立飞书访问设置中批准明确的用户 ID',409);
   await running(req.instance);const code=util.text(req.body.code,'配对码',20);if(!/^[A-Za-z0-9-]+$/.test(code))util.fail('配对码不合法');
   const args=['pairing','approve','feishu',code];if(req.body.account)args.push('--account',util.text(req.body.account,'账号'));
   // No --notify: approving access does not send an outbound message.
@@ -69,7 +87,9 @@ router.get('/:id/extensions',run(async(req,res)=>{
   await running(req.instance);const {config,revision}=read(req);
   const agent=req.query.agentId?util.agentId(req.query.agentId):util.agents(config)[0].id;
   const [skills,plugins]=await Promise.all([gateway.rpc(req.instance,'skills.status',{agentId:agent}),gateway.cli(req.instance,['plugins','list','--json']).then(util.jsonOutput)]);
-  res.json(redact({revision,agentId:agent,agents:util.agents(config).map(a=>({id:a.id,name:a.name||a.id})),skills:util.publicSkills(skills.skills||[]),plugins:plugins.plugins||[],diagnostics:plugins.diagnostics||plugins.registry?.diagnostics||[]},config,req.instance));
+  const isolatedPlugins=Object.entries(req.instance.pluginIsolation?.targets||{}).map(([id,t])=>({id,tools:t.tools.map(tool=>tool.name),origins:t.origins||[],execution:'isolated-container',dataAccess:'none'}));
+  const isolatedChannels=Object.entries(req.instance.channelIsolation?.accounts||{}).map(([id,t])=>({id,state:t.state,mode:'text-only'}));
+  res.json(redact({revision,isolatedPlugins,isolatedChannels,agentId:agent,agents:util.agents(config).map(a=>({id:a.id,name:a.name||a.id})),skills:util.publicSkills(skills.skills||[]),plugins:plugins.plugins||[],diagnostics:plugins.diagnostics||plugins.registry?.diagnostics||[]},config,req.instance));
 }));
 router.put('/:id/extensions/skill',run(async(req,res)=>{
   const before=read(req,true);await running(req.instance);
@@ -99,22 +119,35 @@ router.post('/:id/extensions/skill/install',run(async(req,res)=>{
 }));
 router.put('/:id/extensions/plugin',run(async(req,res)=>{
   const before=read(req,true);await running(req.instance);const id=util.text(req.body.pluginId,'插件标识');
+  if(id==='feishu'&&req.instance.channelIsolation)util.fail('独立飞书不能恢复原生插件执行',409);
+  if(id==='manager-isolated-tools'||req.instance.pluginIsolation?.targets?.[id])util.fail('独立插件请使用 isolate-plugin.cjs 管理，不能切换回原生执行',409);
   const data=util.jsonOutput(await gateway.cli(req.instance,['plugins','list','--json']));
   if(!data.plugins?.some(p=>p.id===id))util.fail('插件不存在');
   if(typeof req.body.enabled!=='boolean')util.fail('启用状态不合法');
-  before.config.plugins||={};before.config.plugins.entries||={};before.config.plugins.entries[id]={...before.config.plugins.entries[id],enabled:req.body.enabled};
-  // Preserve explicit allowlists; enabling a selected plugin admits only that id.
-  if(req.body.enabled && Array.isArray(before.config.plugins.allow) && !before.config.plugins.allow.includes(id))before.config.plugins.allow.push(id);
-  if(req.body.enabled && before.config.plugins.deny?.includes(id))util.fail('插件位于 deny 列表，请先在配置文件中调整');
-  res.json({ok:true,revision:await commit(req,before),hint:'插件设置已保存。请使用顶部“重启”应用完整插件生命周期。'});
+  // Delegate enablement to the owner so stored consent and widened surfaces
+  // cannot be bypassed by directly writing entries.enabled.
+  if(req.body.enabled && before.config.plugins?.deny?.includes(id))util.fail('插件位于 deny 列表，请先在配置文件中调整');
+  const result=await gateway.rpc(req.instance,'plugins.setEnabled',{pluginId:id,enabled:req.body.enabled});
+  if(result?.ok===false)util.fail('插件状态未更新，请检查权限和运行时状态');
+  res.json({ok:true,hint:'插件状态已更新。若运行时提示需要重启，请使用顶部“重启”。'});
+}));
+router.post('/:id/extensions/plugin/review',run(async(req,res)=>{
+  if(req.instance.channelIsolation&&/^@openclaw\/feishu@/.test(req.body.spec||''))util.fail('独立飞书不能恢复原生插件',409);
+  const before=read(req,true);await running(req.instance);
+  const review=await installer.prepare(pluginInstall.context(req,before.revision),req.body.spec);
+  // Registry lookups must not silently approve an intervening config change.
+  read(req,true);
+  res.json(pluginResult(review,before.config,req.instance));
 }));
 router.post('/:id/extensions/plugin/install',run(async(req,res)=>{
-  read(req,true);await running(req.instance);const spec=util.npmSpec(req.body.spec);
-  const result=await gateway.cli(req.instance,['plugins','install',spec,'--pin','--accept-capabilities','--acknowledge-install-policy-warning'],240000);
-  res.json({ok:true,hint:redact(result,read(req).config,req.instance)+'\n请刷新并重启实例应用插件。'});
+  const before=read(req,true);await running(req.instance);
+  const result=await installer.install(pluginInstall.context(req,before.revision),req.instance,req.body);
+  res.json(pluginResult(result,read(req).config,req.instance));
 }));
 router.post('/:id/extensions/plugin/uninstall',run(async(req,res)=>{
   read(req,true);await running(req.instance);const id=util.text(req.body.pluginId,'插件标识');
+  if(id==='feishu'&&req.instance.channelIsolation)util.fail('独立飞书不能通过原生卸载入口修改',409);
+  if(id==='manager-isolated-tools'||req.instance.pluginIsolation?.targets?.[id])util.fail('请先使用 isolate-plugin.cjs 移除独立执行策略',409);
   if(!/^[A-Za-z0-9._-]+$/.test(id))util.fail('插件标识不合法');
   const data=util.jsonOutput(await gateway.cli(req.instance,['plugins','list','--json']));
   const plugin=data.plugins?.find(p=>p.id===id);if(!plugin)util.fail('插件不存在');
@@ -133,6 +166,7 @@ router.get('/:id/agents',run(async(req,res)=>{
   }),bindings:(config.bindings||[]).map(row=>({...row,managerId:store.revision(JSON.stringify(row))}))});
 }));
 router.post('/:id/agents',run(async(req,res)=>{
+  if(req.instance.security?.profile==='ssh-sandbox-v1')util.fail('请使用 secure-instance.cjs --add-agent 配置独立执行容器',409);
   const {config}=read(req,true);await running(req.instance);
   const id=util.agentId(req.body.agentId);if(id==='main'||util.agents(config).some(a=>a.id===id))util.fail('Agent ID 已存在或保留');
   const name=util.text(req.body.name||id,'名称');
@@ -165,9 +199,11 @@ router.delete('/:id/agents/:agentId',run(async(req,res)=>{
   res.json({ok:true,revision:await commit(req,before),hint:'已移除 Agent 配置及其消息路由，工作区与会话数据保留。'});
 }));
 router.post('/:id/agent-bindings',run(async(req,res)=>{
+  if(req.instance.channelIsolation)util.fail('独立飞书路由由受限渠道策略管理；请使用其 routes 配置',409);
   const before=read(req,true);util.bindingPatch(before.config,req.body);res.json({ok:true,revision:await commit(req,before)});
 }));
 router.delete('/:id/agent-bindings/:bindingId',run(async(req,res)=>{
+  if(req.instance.channelIsolation)util.fail('独立飞书路由由受限渠道策略管理',409);
   const before=read(req,true);const rows=before.config.bindings||[];const index=rows.findIndex(r=>store.revision(JSON.stringify(r))===req.params.bindingId);
   if(index<0)util.fail('路由已变化，请刷新',409);rows.splice(index,1);res.json({ok:true,revision:await commit(req,before)});
 }));

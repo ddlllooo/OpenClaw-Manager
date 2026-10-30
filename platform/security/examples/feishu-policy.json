@@ -1,0 +1,16 @@
+{
+  "mode": "text-only",
+  "accounts": {
+    "default": {
+      "agentId": "feishu",
+      "dmPolicy": "allowlist",
+      "allowFrom": ["ou_REPLACE_WITH_APPROVED_USER"],
+      "groupPolicy": "allowlist",
+      "groupAllowFrom": ["oc_REPLACE_WITH_APPROVED_CHAT"],
+      "groupSenderAllowFrom": [],
+      "requireMention": true,
+      "groups": {},
+      "routes": []
+    }
+  }
+}

@@ -2,11 +2,11 @@
 
 const express = require('express');
 const store = require('../instances');
+const confidential = require('../confidential');
 
 const router = express.Router();
 
-// Return masked .env content: keep keys, mask values except token entries the
-// user needs to copy into the OpenClaw Control UI (OPENCLAW_GATEWAY_TOKEN).
+// Values remain server-side; unchanged masked lines restore their stored values.
 function maskEnv(content) {
   return content.split(/\r?\n/).map((line) => {
     const t = line.trim();
@@ -14,10 +14,7 @@ function maskEnv(content) {
     const eq = t.indexOf('=');
     if (eq <= 0) return line;
     const key = t.slice(0, eq);
-    const val = t.slice(eq + 1);
-    if (/^OPENCLAW_GATEWAY_TOKEN$/i.test(key)) return line; // visible: needed for UI login
-    if (val.length <= 4) return `${key}=****`;
-    return `${key}=${val.slice(0, 2)}${'*'.repeat(Math.min(12, val.length - 4))}${val.slice(-2)}`;
+    return `${key}=****`;
   }).join('\n');
 }
 
@@ -59,7 +56,7 @@ function requireInstance(req, res, next) {
 router.get('/:id/config', requireInstance, (req, res) => {
   const raw = store.readOpenclawConfig(req.instance.id);
   if (raw === null) return res.status(404).json({ error: '配置文件尚未生成' });
-  res.json({ content: raw, revision: store.revision(raw) });
+  res.json({ content: JSON.stringify(confidential.mask(JSON.parse(raw)), null, 2) + '\n', revision: store.revision(raw) });
 });
 
 router.put('/:id/config', express.json({ limit: '1mb' }), requireInstance, async (req, res) => {
@@ -67,17 +64,18 @@ router.put('/:id/config', express.json({ limit: '1mb' }), requireInstance, async
     const old = store.readOpenclawConfig(req.instance.id);
     if (!req.body.revision) return res.status(428).json({ error: '请先重新加载配置' });
     if (req.body.revision !== store.revision(old)) return res.status(409).json({ error: '配置已被其他操作修改，请重新加载后合并' });
-    const content = String(req.body.content || '');
-    const parsed = JSON.parse(content);
+    let content = String(req.body.content || '');
+    const parsed = confidential.restore(JSON.parse(content), JSON.parse(old || '{}'));
+    content = JSON.stringify(parsed, null, 2) + '\n';
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('配置必须是对象');
     if (parsed.gateway?.auth?.token !== req.instance.gatewayToken) throw new Error('请保持 Gateway Token 不变；凭据轮换需要专门迁移');
     await require('../validation').validate(req.instance, content);
     if (!req.instance.configPending) store.atomicWrite(require('path').join(store.configDir(req.instance.id), 'openclaw.json.last-good'), old);
     store.writeOpenclawConfig(req.instance.id, content);
     store.saveInstance({ ...req.instance, configPending: true });
-    res.json({ ok: true, revision: store.revision(content), hint: '配置已校验并保存。部分配置需重启后生效。' });
+    res.json({ ok: true, content: JSON.stringify(confidential.mask(parsed), null, 2) + '\n', revision: store.revision(content), hint: '配置已校验并保存。部分配置需重启后生效。' });
   } catch (err) {
-    res.status(400).json({ error: `保存失败: ${err.message}` });
+    res.status(400).json({ error: confidential.scrub(`保存失败: ${err.message}`, req.instance) });
   }
 });
 
@@ -108,9 +106,9 @@ router.put('/:id/env', express.json({ limit: '256kb' }), requireInstance, (req, 
     if (!req.instance.envPending) store.atomicWrite(require('path').join(store.configDir(req.instance.id), '.env.last-good'), old);
     store.writeEnvFile(req.instance.id, content);
     store.saveInstance({ ...req.instance, envPending: content !== old || req.instance.envPending });
-    res.json({ ok: true, revision: store.revision(content), hint: '环境变量已保存，重启时将安全重建容器以应用。' });
+    res.json({ ok: true, content: maskEnv(content), revision: store.revision(content), hint: '环境变量已保存，重启时将安全重建容器以应用。' });
   } catch (err) {
-    res.status(400).json({ error: `保存失败: ${err.message}` });
+    res.status(400).json({ error: confidential.scrub(`保存失败: ${err.message}`, req.instance) });
   }
 });
 

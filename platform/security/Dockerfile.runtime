@@ -1,0 +1,9 @@
+ARG OPENCLAW_RUNTIME
+FROM ${OPENCLAW_RUNTIME}
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-client && rm -rf /var/lib/apt/lists/*
+COPY security/launch.cjs /opt/openclaw-security/launch.cjs
+LABEL openclaw.security.runtime="ssh-sandbox-v1"
+USER node
+ENTRYPOINT ["node", "/opt/openclaw-security/launch.cjs"]
+CMD ["openclaw", "gateway", "--allow-unconfigured"]

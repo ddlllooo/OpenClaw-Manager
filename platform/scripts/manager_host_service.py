@@ -93,6 +93,10 @@ class Service:
         if schedule['enabled'] and state.get('state') not in ['running','failed'] and ((state.get('lastSuccess') or {}).get('date') or '')<latest:state.update(state='overdue',lastError='每日备份尚未成功完成，请检查计划或立即重试')
         return {**state,'schedule':schedule,'nextRunAt':next_run.isoformat() if schedule['enabled'] else None,'retentionDays':7,'directory':str(root)}
     def dispatch(self,action,body):
+        if action in ['quota-probe','quota-status','quota-apply']:
+            from storage_quota import backend
+            return backend(self.host.data).dispatch(action,body)
+        if action=='instance-intent':return self.supervisor.intent(body)
         if action=='status':return self.supervisor.view()
         if action=='settings':return self.supervisor.update(body)
         if action in ['check','tick']:return self.supervisor.tick()
@@ -139,7 +143,7 @@ class Service:
             except RecoveryError as e:
                 if e.status!=409:print('recovery: '+str(e)[:700],flush=True)
             except Exception as e:print('recovery: '+str(e)[:700],flush=True)
-            self.stop.wait(20)
+            self.stop.wait(3)
     def serve(self):
         import fcntl
         lock=(self.control/'service.lock').open('a');fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -168,7 +172,10 @@ def main():
     if not isinstance(config,dict):raise RecoveryError('缺少宿主服务配置')
     service=Service(config)
     if args.action=='serve':
-        for sig in [signal.SIGTERM,signal.SIGINT]:signal.signal(sig,lambda *_:service.stop.set())
+        def shutting_down(*_):
+            try:service.supervisor.recovery().shutting_down=True
+            finally:service.stop.set()
+        for sig in [signal.SIGTERM,signal.SIGINT]:signal.signal(sig,shutting_down)
         service.serve()
     elif args.action=='init':print(json.dumps(service.supervisor.view(),ensure_ascii=False))
     elif args.action=='status':print(json.dumps(service.supervisor.view(),ensure_ascii=False))

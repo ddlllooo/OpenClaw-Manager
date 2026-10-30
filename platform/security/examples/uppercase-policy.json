@@ -1,0 +1,15 @@
+{
+  "id": "sample",
+  "tools": [{
+    "name": "sample_uppercase",
+    "description": "Convert explicitly supplied text to uppercase",
+    "parameters": {
+      "type": "object",
+      "properties": { "text": { "type": "string", "maxLength": 4096 } },
+      "required": ["text"],
+      "additionalProperties": false
+    }
+  }],
+  "origins": [],
+  "config": {}
+}

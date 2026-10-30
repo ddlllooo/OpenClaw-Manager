@@ -9,13 +9,22 @@ services:
     container_name: ${MANAGER_CONTAINER:-openclaw-manager}
     init: true
     user: "${MANAGER_UID:-501}:${MANAGER_GID:-20}"
-    group_add: ["${DOCKER_SOCKET_GID:-0}"]
     restart: ${MANAGER_RESTART_POLICY:-unless-stopped}
     network_mode: bridge
     ports:
       - "127.0.0.1:${MANAGER_PORT:-18080}:${MANAGER_PORT:-18080}"
     environment:
+      OPENCLAW_ENV_FILE: /run/openclaw-manager.env
+      OPENCLAW_CONTROL_SOCKET: /run/openclaw-docker/control.sock
       MANAGER_PORT: ${MANAGER_PORT:-18080}
+      OPENCLAW_AGENT_POLICY: ${OPENCLAW_AGENT_POLICY:-compatible}
+      OPENCLAW_INSTANCE_EGRESS: ${OPENCLAW_INSTANCE_EGRESS:-compatible}
+      MANAGER_AUTH_TOKEN: ${MANAGER_AUTH_TOKEN:-}
+      MANAGER_MODEL_HTTP_ORIGINS: ${MANAGER_MODEL_HTTP_ORIGINS:-}
+      MANAGER_PLUGIN_ALLOWLIST: ${MANAGER_PLUGIN_ALLOWLIST:-}
+      MANAGER_NATIVE_PLUGIN_ALLOWLIST: ${MANAGER_NATIVE_PLUGIN_ALLOWLIST:-}
+      # Container-only listener; do not publish this port to the host/LAN.
+      OPENCLAW_CHANNEL_BRIDGE_LISTEN: ${OPENCLAW_CHANNEL_BRIDGE_LISTEN:-0.0.0.0:18081}
       OPENCLAW_DEVICE_NAME: ${MANAGER_DEVICE_NAME:-}
       OPENCLAW_PREVIOUS_MANAGER_IMAGE: ${MANAGER_PREVIOUS_IMAGE:-}
       OPENCLAW_DATA_DIR: ${MANAGER_DATA_HOME:?set absolute MANAGER_DATA_HOME}/instances
@@ -24,6 +33,13 @@ services:
       OPENCLAW_BACKUP_DIR: ${MANAGER_BACKUP_DIR:?set absolute MANAGER_BACKUP_DIR}
       OPENCLAW_INSTANCE_USER: ${OPENCLAW_INSTANCE_USER:-}
     volumes:
+      # Private runtime configuration; excluded from the image and source archive.
+      - type: bind
+        source: ./.env
+        target: /run/openclaw-manager.env
+        read_only: true
+        bind:
+          create_host_path: false
       # Preserve host paths: sibling instance bind mounts use these exact paths.
       - type: bind
         source: ${MANAGER_DATA_HOME}
@@ -35,11 +51,10 @@ services:
         target: /run/openclaw-control
         bind:
           create_host_path: false
-      - type: bind
-        source: ${DOCKER_SOCKET_HOST:?set absolute DOCKER_SOCKET_HOST}
-        target: /var/run/docker.sock
-        bind:
-          create_host_path: false
+      - docker-control:/run/openclaw-docker:ro
+    depends_on:
+      docker-control:
+        condition: service_healthy
     labels:
       openclaw.manager: "true"
       openclaw.deployment: ${MANAGER_DEPLOYMENT:?set unique MANAGER_DEPLOYMENT}
@@ -57,3 +72,34 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  docker-control:
+    image: ${MANAGER_IMAGE:-openclaw-manager:2026.10.15-container1}
+    command: ["node", "scripts/docker-control.cjs"]
+    user: "0:0"
+    restart: unless-stopped
+    network_mode: none
+    environment:
+      OPENCLAW_DATA_DIR: ${MANAGER_DATA_HOME}/instances
+      OPENCLAW_CONTROL_SOCKET: /run/openclaw-docker/control.sock
+      OPENCLAW_DOCKER_SOCKET: /var/run/docker.sock
+      OPENCLAW_CONTROL_SOCKET_MODE: "666"
+      OPENCLAW_CONTROL_DEPLOYMENT: ${MANAGER_DEPLOYMENT}
+      OPENCLAW_CONTROL_MANAGER: ${MANAGER_CONTAINER:-openclaw-manager}
+    volumes:
+      - ${DOCKER_SOCKET_HOST}:/var/run/docker.sock
+      - ${MANAGER_DATA_HOME}:${MANAGER_DATA_HOME}:ro
+      - docker-control:/run/openclaw-docker
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [DAC_OVERRIDE]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get({socketPath:'/run/openclaw-docker/control.sock',path:'/_ping'},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+volumes:
+  docker-control:

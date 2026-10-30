@@ -48,6 +48,7 @@ async function detect({ model, baseUrl, apiKey, catalog = async () => [], fetche
   try {
     const url = new URL(String(baseUrl).replace(/\/$/, '') + '/models');
     if (!['http:', 'https:'].includes(url.protocol)) throw new Error('unsupported URL');
+    require('./model-config').validateTransport(url);
     const response = await fetcher(url, { headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
       redirect: 'error', signal: AbortSignal.timeout(8000) });
     if (response.ok) {

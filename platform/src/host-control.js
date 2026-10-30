@@ -5,8 +5,8 @@ function directory(){return process.env.OPENCLAW_HOST_CONTROL_DIR;}
 function enabled(){return Boolean(directory());}
 function error(message,statusCode=503){return Object.assign(new Error(message),{statusCode});}
 function signature(key,payload){return crypto.createHmac('sha256',key).update(payload).digest('hex');}
-function begin(action,body,timeout){
-  const root=directory();if(!root)throw error('未配置宿主控制服务');
+function begin(action,body,timeout,overrideDirectory){
+  const root=overrideDirectory||directory();if(!root)throw error('未配置宿主控制服务');
   const key=fs.readFileSync(path.join(root,'key'),'utf8').trim();if(!/^[a-f0-9]{64}$/.test(key))throw error('宿主控制密钥不合法');
   const id=crypto.randomBytes(16).toString('hex'),deadline=Date.now()+timeout;
   const payload=Buffer.from(JSON.stringify({id,issuedAt:Date.now()/1000,deadline:deadline/1000,action,body:body||{}})).toString('base64');
@@ -26,8 +26,8 @@ function finish(r){
   return {value:result.result};
 }
 function clean(r){for(const p of [r.file,r.reply])try{fs.unlinkSync(p);}catch(e){if(e.code!=='ENOENT')console.warn('宿主请求清理失败');}}
-async function request(action,body={},timeout=90000){
-  const r=begin(action,body,timeout);
+async function request(action,body={},timeout=90000,overrideDirectory){
+  const r=begin(action,body,timeout,overrideDirectory);
   try{while(Date.now()<r.deadline){const response=finish(r);if(response)return response.value;await new Promise(resolve=>setTimeout(resolve,100));}throw error('宿主控制服务未响应，请检查系统启动任务');}
   finally{clean(r);}
 }

@@ -3,13 +3,20 @@ const fs = require('fs');
 const path = require('path');
 const store = require('./instances');
 const busy = new Map();
-function middleware(req, res, next) {
+async function middleware(req, res, next) {
   if (['GET', 'HEAD'].includes(req.method)) return next();
   const parts = req.path.split('/').filter(Boolean);
   const key = parts[0] === 'kept' ? parts[1] : (parts[0] || 'create');
+  if(/^[a-z0-9_-]{1,80}$/i.test(key)&&parts[1]!=='stop'&&require('./storage').isMigrating(key))return res.status(423).json({error:'实例正在 APFS 数据迁移，禁止修改或解除保护'});
+  if(/^[a-z0-9_-]{1,80}$/i.test(key)&&fs.existsSync(path.join(store.instanceDir(key),'manager','security','migration.lock')))return res.status(423).json({error:'该实例正在安全迁移或回滚，请等待完成'});
   // Cancellation must be able to reach the gateway while its chat stream owns
   // the instance operation lock. It cannot change container/config state.
   if (req.method === 'POST' && parts[1] === 'chat' && parts[2] === 'abort' && parts.length === 3) return next();
+  // Keep cancellation, data maintenance and stop available while all new work
+  // is fenced. This check runs before body-dependent task dispatch.
+  if(/^[a-z0-9_-]{1,80}$/i.test(key)&&fs.existsSync(path.join(store.instanceDir(key),'instance.json'))&&parts[1]!=='storage'&&parts[1]!=='stop'&&parts[1]!=='diagnostics'&&req.method!=='DELETE'){
+    try{await require('./storage').assertAdmission(key);}catch(error){return res.status(error.statusCode||507).json({error:error.message,code:'INSTANCE_STORAGE_PROTECTED',retryable:false});}
+  }
   const maintenance = require('./maintenance-guard');
   if (maintenance.active) return res.status(409).json({ error: maintenance.conflict().message });
   if (busy.has(key)) return res.status(409).json({ error: '该实例已有操作执行中，请等待完成', operation: busy.get(key) });

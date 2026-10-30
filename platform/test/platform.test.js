@@ -26,7 +26,7 @@ test('portable host port detection recognizes an occupied port without Bash or n
 test('disk telemetry measures the data filesystem',()=>{const disk=runtime.diskInfo(scratch);assert.ok(disk.total>0);assert.ok(disk.available>=0&&disk.available<=disk.total);});
 test('packaged desktop deployment restores the renamed lockfile to the Docker build context',async()=>{
   const root=path.join(scratch,'packaged');fs.mkdirSync(root);
-  for(const dir of ['src','public','scripts','control-ui-patches'])fs.mkdirSync(path.join(root,dir));
+  for(const dir of ['src','public','scripts','control-ui-patches','security'])fs.mkdirSync(path.join(root,dir));
   for(const name of ['Dockerfile','package.json','server.js'])fs.writeFileSync(path.join(root,name),'fixture');
   fs.writeFileSync(path.join(root,'deployment-lock.json'),'fixture-lock');
   const extract=require('tar-stream').extract(),entries={};

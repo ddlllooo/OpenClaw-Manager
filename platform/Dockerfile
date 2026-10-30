@@ -4,7 +4,10 @@ FROM ${DOCKER_CLI_IMAGE} AS cli
 FROM ${NODE_IMAGE} AS dependencies
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --ignore-scripts --fetch-timeout=30000 --fetch-retries=1 && npm cache clean --force
+RUN npm ci --include=dev --ignore-scripts --fetch-timeout=30000 --fetch-retries=1
+COPY frontend ./frontend
+COPY vite.config.mjs ./
+RUN npm run build && npm prune --omit=dev --ignore-scripts && npm cache clean --force
 FROM ${NODE_IMAGE}
 LABEL openclaw.manager="true"
 RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates && rm -rf /var/lib/apt/lists/*
@@ -15,7 +18,11 @@ COPY --from=dependencies /app/node_modules ./node_modules
 COPY package.json package-lock.json server.js Dockerfile ./
 COPY src ./src
 COPY public ./public
+COPY --from=dependencies /app/public/ui ./public/ui
+COPY frontend ./frontend
+COPY vite.config.mjs ./
 COPY control-ui-patches ./control-ui-patches
 COPY scripts ./scripts
+COPY security ./security
 HEALTHCHECK --interval=20s --timeout=4s --start-period=20s --retries=3 CMD node -e "require('http').get('http://127.0.0.1:'+process.env.MANAGER_PORT+'/',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
 CMD ["node", "server.js"]

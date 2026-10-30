@@ -88,7 +88,7 @@ function redact(value, config, instance) {
   const env = store.parseEnv(store.readEnvFile(instance.id) || '');
   for (const [key, value] of Object.entries(env)) if (/secret|password|key|token/i.test(key) && value.length >= 4) secrets.add(value);
   function clean(node) {
-    if (typeof node === 'string') { for (const secret of secrets) if (secret) node = node.split(secret).join('[已脱敏]'); return node; }
+    if (typeof node === 'string') { for (const secret of secrets) if (secret) node = node.split(secret).join('[已脱敏]'); return require('./confidential').scrub(node, instance); }
     if (Array.isArray(node)) return node.map(clean);
     if (node && typeof node === 'object') return Object.fromEntries(Object.entries(node).map(([k, v]) => [k, /^(api.?key|token|password|secret|appSecret|authorization|privateKey|headers|env)$/i.test(k) ? '[已脱敏]' : clean(v)]));
     return node;
