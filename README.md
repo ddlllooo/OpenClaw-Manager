@@ -90,15 +90,25 @@ npm run web:stop
 
 首次自动部署需要目标设备能下载构建基础镜像和依赖。离线设备可先仅建立 SSH，传入预先准备的 Manager 与 OpenClaw 镜像，再离线启动 Manager。镜像架构须与目标 Linux 容器引擎匹配。
 
-### Docker 部署 Manager
+### 在 macOS 或 Linux 服务器上运行 Manager 和 OpenClaw
 
-在 `platform/` 中将 [`compose.env.example`](platform/compose.env.example) 复制为 `compose.env`，将 [`.env.example`](platform/.env.example) 复制为 `.env` 并填写登录令牌，修改宿主机绝对目录、Docker socket 路径、UID/GID 等配置，创建所需挂载目录后运行。Compose 将 `.env` 以只读文件挂载给 Manager，令牌不进入镜像：
+Manager、Docker 引擎和 OpenClaw 实例都运行在服务器上。macOS 通过 Docker Desktop 或已配置的 Colima/Lima 运行 Linux 容器。Docker Desktop 需要登录会话。原生 Linux 使用 Docker Engine，开机启动由系统服务配置。Manager 镜像自带 Node.js，服务器需准备 Docker CLI 和 Compose。
 
-```sh
-docker compose --env-file compose.env up -d --build
-```
+首次部署在 `platform/` 下进行。将 [`.env.example`](platform/.env.example) 复制为私有 `.env` 并设置管理令牌。按目标系统选择下表中的模板并复制为 `compose.env`，填写服务器的绝对路径、数据所有者 UID/GID 和 Docker socket，预先创建所需挂载目录。Compose 以只读方式挂载 `.env`。
 
-示例路径需要按设备替换。完整说明见 [容器部署说明](platform/CONTAINER-DEPLOYMENT.txt)。
+| 服务器 | 配置模板 | 首次部署命令 |
+| --- | --- | --- |
+| macOS | [`compose.env.example`](platform/compose.env.example) | `docker compose --env-file compose.env -f compose.yaml up -d --build` |
+| 原生 Linux（无宿主硬配额） | [`compose.linux.env.example`](platform/compose.linux.env.example) | `docker compose --env-file compose.env -f compose.yaml -f compose.linux.yaml up -d --build` |
+
+需要宿主硬配额时，macOS 使用已配置并验证的 APFS 卷，Linux 使用已启用项目配额的 XFS 和专用宿主配额服务。带硬配额的部署需使用其实际挂载及宿主服务配置。详见 [容器部署说明](platform/CONTAINER-DEPLOYMENT.txt) 和 [硬配额配置](platform/README.md#xfs-硬配额后端及部署)。
+
+#### 从电脑管理服务器
+
+- **浏览器**：服务器上的 Manager 默认发布在 `127.0.0.1:18080`。在电脑上运行 `ssh -N -L 127.0.0.1:18080:127.0.0.1:18080 user@server`，再打开 `http://127.0.0.1:18080` 并用服务器的管理令牌登录。使用自定义管理端口时，将转发两端和浏览器地址改为相同端口。当前默认配置通过回环地址访问，直接访问 `服务器IP:18080` 不可用。
+- **本地 Manager**：在 Windows、macOS 或 Linux 上打开桌面版或本地 Web 版。在「部署设备 / SSH」中核对主机指纹，选择「连接已有 Manager」，填入服务器的管理端口。服务器需启用 SSH 并允许 TCP 转发。本地只管理远程实例时可以不装 Docker，断开管理连接后服务器实例继续运行。
+
+从 macOS 切换到 Linux 时，先在目标端准备与架构匹配的 OpenClaw 镜像、数据目录和存储策略。停机后备份并校验源数据，先在独立目录验证恢复，再切换业务。保持源实例停止，避免两个实例同时处理同一渠道账号。带宿主硬配额或独立执行卷的实例需单独验证其存储配置与恢复范围。详见 [备份与恢复说明](platform/BACKUPS.txt)。
 
 ## 开发与构建
 

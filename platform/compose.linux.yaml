@@ -1,0 +1,11 @@
+# Native Linux Docker Engine, without the macOS signed host-control service.
+# Only for deployments whose instances do not use host-managed hard quotas.
+# docker compose --env-file compose.env -f compose.yaml -f compose.linux.yaml up -d
+services:
+  manager:
+    user: "${MANAGER_UID:?set the Linux data owner UID}:${MANAGER_GID:?set the Linux data owner GID}"
+    environment:
+      OPENCLAW_HOST_CONTROL_DIR: ""
+      OPENCLAW_INSTANCE_USER: "${MANAGER_UID}:${MANAGER_GID}"
+      OPENCLAW_STARTUP_HOME: ${MANAGER_DATA_HOME}
+      OPENCLAW_BACKUP_DIR: ${MANAGER_DATA_HOME}/backups

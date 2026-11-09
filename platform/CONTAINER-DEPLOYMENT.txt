@@ -7,7 +7,7 @@ Manager 网页、API、终端与 Docker 管理逻辑在 Docker 容器内运行�
 
 文件
 Dockerfile：固定官方 Node/Docker CLI 镜像摘要，多阶段构建，只安装生产依赖。
-compose.yaml：单个 manager 服务，默认 bridge 网络、只读镜像、持久数据绑定、日志轮转、健康检查与资源限制。
+compose.yaml：manager 与独立 docker-control 服务；Manager 不直接挂载 Docker socket，保留只读镜像、持久数据绑定、日志轮转、健康检查与资源限制。
 compose.env.example：宿主路径、UID/GID、Docker socket、部署标签和端口示例。实际 compose.env 不含账号密码。
 scripts/manager_host_service.py：宿主控制器，serve/plist/status/check/init。
 src/host-control.js：平台到宿主的签名控制协议。
@@ -44,3 +44,10 @@ Manager 切换只 bootout 旧 Manager/恢复 LaunchAgent，不停止业务容器
 验证边界
 临时数据、临时实例、临时 Compose 项目、独立 Docker profile 与独立系统服务标签用于测试。
 独立 VM 重启验证不等同于物理 Mac 重启且无 GUI 登录验收；最终验收需要维护窗口，不能为了验证而重启现有业务服务器。
+
+原生 Linux 首次部署
+普通 Linux Docker Engine 使用 compose.yaml 加 compose.linux.yaml；复制 compose.linux.env.example 为 compose.env，按 id -u / id -g 填写实际数据所有者，创建并授权 MANAGER_DATA_HOME、MANAGER_CONTROL_DIR，再复制 .env.example 为私有 .env。
+运行 docker compose --env-file compose.env -f compose.yaml -f compose.linux.yaml build manager，然后用相同参数执行 up -d --no-build --pull never。不要仅复制 macOS 的 UID 501 / GID 20 或宿主控制目录配置。
+Linux 覆盖配置将实例 UID/GID 与数据所有者保持一致，备份放在已挂载的 MANAGER_DATA_HOME/backups 中，并使用容器内 Python / Node 执行在线加密备份。它保留独立 Docker 控制服务、回环端口、只读根目录、能力收缩和资源上限。
+该配置仅适用于未启用宿主管理硬配额的实例。不要将它叠加到已有 APFS 或签名宿主配额服务的部署中；既有部署必须保留原控制服务及全部挂载。Linux XFS 硬配额需要另外准备受限宿主配额服务；ext4 或未配置服务时应报告不支持，不能用软限制冒充硬配额。
+Linux 使用 Docker 重启策略管理实例和容器化 Manager 自启；Docker 引擎自启由目标系统服务配置。macOS LaunchDaemon、APFS 和 Colima 设置不适用于原生 Linux。源码启动仍要求 Node.js 22.12+；Docker 镜像自带 Node，不依赖宿主旧版 Node。
