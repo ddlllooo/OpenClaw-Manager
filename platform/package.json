@@ -78,6 +78,7 @@
       "security/**/*",
       "public/**/*",
       "electron/**/*",
+      "build/icon.png",
       "node_modules/**/*",
       "!node_modules/cpu-features/**/*",
       "!node_modules/ssh2/lib/protocol/crypto/build/**/*",
@@ -122,11 +123,13 @@
           ]
         }
       ],
-      "icon": "build/icon.png"
+      "icon": "build/icon.ico"
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico"
     },
     "linux": {
       "target": [

@@ -16,6 +16,7 @@ if (app.isPackaged && !process.env.OPENCLAW_ENV_FILE) {
 require('../src/env').load();
 
 const APP_NAME = 'OpenClaw Manager';
+const APP_ICON = path.join(__dirname, '..', 'build', 'icon.png');
 const PORT = Number(process.env.MANAGER_PORT || 18080);
 const APP_URL = `http://127.0.0.1:${PORT}/`;
 
@@ -70,6 +71,7 @@ async function createWindow() {
     minWidth: 1080,
     minHeight: 640,
     title: APP_NAME,
+    icon: APP_ICON,
     backgroundColor: '#faf6f1',
     show: false,
     webPreferences: {
@@ -141,6 +143,7 @@ if (!gotLock) {
   });
 
   app.whenReady().then(() => {
+    if (process.platform === 'darwin') app.dock?.setIcon(APP_ICON);
     startServer();
     buildMenu();
     createWindow();
